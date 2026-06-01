@@ -48,7 +48,7 @@ export function SkillRiskPanel({
   workspace: string;
   refName?: string;
 }) {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const settings = useTheme();
   const risk = effectiveRisk(manifest);
   const findings = analyzeManifest(manifest, t);
@@ -56,19 +56,21 @@ export function SkillRiskPanel({
   const dangerCount = findings.filter((f) => f.level === "danger").length;
   const warningCount = findings.filter((f) => f.level === "warning").length;
 
-  const aiConfigured = settings.aiProvider !== "none" && Boolean(settings.aiBaseUrl);
+  const activeAiConfig = settings.aiProvider !== "none" ? settings.aiConfigs?.[settings.aiProvider] : null;
+  const aiConfigured = settings.aiProvider !== "none" && Boolean(activeAiConfig?.baseUrl);
 
   const review = useMutation<AiReviewResult, Error>({
     mutationFn: () =>
       reviewSkill({
         provider: settings.aiProvider,
-        baseUrl: settings.aiBaseUrl,
-        model: settings.aiModel,
+        baseUrl: activeAiConfig?.baseUrl ?? "",
+        model: activeAiConfig?.model ?? "",
         workspace,
         skillPath,
         refName,
         skillName: manifest.name,
         permissions: manifest.permissions,
+        language: locale === "zh" ? "zh-CN" : "en",
       }),
   });
 

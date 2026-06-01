@@ -1208,6 +1208,8 @@ export interface AiReviewRequest {
   refName?: string;
   skillName: string;
   permissions?: string[];
+  /** Locale hint for the AI response language ("zh" | "en" | etc). */
+  language?: string;
 }
 
 /** Store the AI provider API key in the OS keychain. */
@@ -1244,6 +1246,7 @@ export async function reviewLocalSkill(args: {
   provider: string;
   baseUrl: string;
   model: string;
+  language?: string;
 }): Promise<AiReviewResult> {
   if (!isTauri) return desktopOnly("AI review");
   return invoke("review_local_skill", args);

@@ -1,4 +1,4 @@
-import { Button, Input, Modal } from "@heroui/react";
+import { Button, Input, Modal, toast } from "@heroui/react";
 import {
   Database,
   FolderOpen,
@@ -34,6 +34,11 @@ const sectionDefs: Array<{ id: SettingsSection; labelKey: string; icon: ReactNod
   { id: "about", labelKey: "settings.about", icon: <Shield size={15} /> },
 ];
 
+export interface AiProviderConfig {
+  baseUrl: string;
+  model: string;
+}
+
 export interface AppSettings {
   theme: "system" | "light" | "dark";
   accentColor: string;
@@ -42,9 +47,13 @@ export interface AppSettings {
   proxyUrl: string;
   requestTimeout: number;
   aiProvider: "none" | "openai" | "anthropic";
-  aiBaseUrl: string;
-  aiModel: string;
+  aiConfigs: Record<string, AiProviderConfig>;
 }
+
+const AI_PROVIDER_DEFAULTS: Record<string, AiProviderConfig> = {
+  openai: { baseUrl: "https://api.openai.com/v1", model: "gpt-5.5" },
+  anthropic: { baseUrl: "https://api.anthropic.com/v1", model: "claude-opus-4-6" },
+};
 
 const defaultSettings: AppSettings = {
   theme: "system",
@@ -54,14 +63,47 @@ const defaultSettings: AppSettings = {
   proxyUrl: "",
   requestTimeout: 30,
   aiProvider: "none",
-  aiBaseUrl: "",
-  aiModel: "",
+  aiConfigs: {
+    openai: { ...AI_PROVIDER_DEFAULTS.openai },
+    anthropic: { ...AI_PROVIDER_DEFAULTS.anthropic },
+  },
 };
+
+/** Get the active provider's resolved config. */
+export function getActiveAiConfig(settings: AppSettings): { provider: string; baseUrl: string; model: string } {
+  if (settings.aiProvider === "none") return { provider: "none", baseUrl: "", model: "" };
+  const config = settings.aiConfigs[settings.aiProvider];
+  const defaults = AI_PROVIDER_DEFAULTS[settings.aiProvider];
+  return {
+    provider: settings.aiProvider,
+    baseUrl: config?.baseUrl || defaults?.baseUrl || "",
+    model: config?.model || defaults?.model || "",
+  };
+}
 
 function loadSettings(): AppSettings {
   try {
     const raw = localStorage.getItem("teamai-settings");
-    if (raw) return { ...defaultSettings, ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      // Migrate from old flat format (aiBaseUrl/aiModel) to nested aiConfigs
+      if (parsed.aiBaseUrl !== undefined || parsed.aiModel !== undefined) {
+        const provider = parsed.aiProvider ?? "none";
+        if (!parsed.aiConfigs) {
+          parsed.aiConfigs = {
+            openai: { ...AI_PROVIDER_DEFAULTS.openai },
+            anthropic: { ...AI_PROVIDER_DEFAULTS.anthropic },
+          };
+        }
+        if (provider !== "none" && parsed.aiConfigs[provider]) {
+          if (parsed.aiBaseUrl) parsed.aiConfigs[provider].baseUrl = parsed.aiBaseUrl;
+          if (parsed.aiModel) parsed.aiConfigs[provider].model = parsed.aiModel;
+        }
+        delete parsed.aiBaseUrl;
+        delete parsed.aiModel;
+      }
+      return { ...defaultSettings, ...parsed };
+    }
   } catch { /* ignore */ }
   return defaultSettings;
 }
@@ -103,7 +145,7 @@ export function SettingsDialog({
               <Modal.Heading className="text-[15px] font-semibold">{t("settings.title")}</Modal.Heading>
             </Modal.Header>
             <Modal.Body className="p-0">
-              <div className="grid min-h-[420px] grid-cols-[140px_1fr] divide-x divide-[var(--line)]">
+              <div className="grid h-[480px] grid-cols-[140px_1fr] divide-x divide-[var(--line)]">
                 {/* Left nav */}
                 <nav className="flex flex-col gap-0.5 p-3">
                   {sectionDefs.map((s) => (
@@ -119,8 +161,8 @@ export function SettingsDialog({
                   ))}
                 </nav>
 
-                {/* Right content */}
-                <div className="scroll-area p-5">
+                {/* Right content — fixed height, scrollable */}
+                <div className="overflow-y-auto p-5">
                   {section === "general" ? (
                     <GeneralSection settings={settings} update={update} />
                   ) : section === "network" ? (
@@ -271,11 +313,6 @@ function NetworkSection({ settings, update }: { settings: AppSettings; update: <
   );
 }
 
-const AI_PROVIDER_DEFAULTS: Record<string, { baseUrl: string; model: string }> = {
-  openai: { baseUrl: "https://api.openai.com/v1", model: "gpt-5.5" },
-  anthropic: { baseUrl: "https://api.anthropic.com/v1", model: "claude-opus-4-8" },
-};
-
 function AiSection({ settings, update }: { settings: AppSettings; update: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void }) {
   const { t } = useLocale();
   const [keyInput, setKeyInput] = useState("");
@@ -286,14 +323,21 @@ function AiSection({ settings, update }: { settings: AppSettings; update: <K ext
     hasAiKey().then(setKeyStored).catch(() => setKeyStored(false));
   }, []);
 
-  const onProviderChange = (provider: string) => {
-    update("aiProvider", provider as AppSettings["aiProvider"]);
-    // Prefill sensible defaults when switching to a provider and the fields are empty.
-    const defaults = AI_PROVIDER_DEFAULTS[provider];
-    if (defaults) {
-      if (!settings.aiBaseUrl) update("aiBaseUrl", defaults.baseUrl);
-      if (!settings.aiModel) update("aiModel", defaults.model);
-    }
+  const provider = settings.aiProvider;
+  const enabled = provider !== "none";
+  const currentConfig = enabled ? settings.aiConfigs[provider] : null;
+
+  const updateProviderConfig = (field: "baseUrl" | "model", value: string) => {
+    if (!enabled) return;
+    const next = {
+      ...settings.aiConfigs,
+      [provider]: { ...settings.aiConfigs[provider], [field]: value },
+    };
+    update("aiConfigs", next);
+  };
+
+  const onProviderChange = (newProvider: string) => {
+    update("aiProvider", newProvider as AppSettings["aiProvider"]);
   };
 
   const onSaveKey = async () => {
@@ -319,8 +363,6 @@ function AiSection({ settings, update }: { settings: AppSettings; update: <K ext
     }
   };
 
-  const enabled = settings.aiProvider !== "none";
-
   return (
     <div className="space-y-0">
       <h3 className="settings-section-title">{t("settings.ai")}</h3>
@@ -328,7 +370,7 @@ function AiSection({ settings, update }: { settings: AppSettings; update: <K ext
 
       <SettingsRow label={t("settings.ai.provider")} description={t("settings.ai.provider.desc")}>
         <SelectControl
-          value={settings.aiProvider}
+          value={provider}
           options={[
             { value: "none", label: t("settings.ai.provider.none") },
             { value: "openai", label: "OpenAI" },
@@ -338,45 +380,57 @@ function AiSection({ settings, update }: { settings: AppSettings; update: <K ext
         />
       </SettingsRow>
 
-      {enabled ? (
+      {enabled && currentConfig ? (
         <>
-          <SettingsRow label={t("settings.ai.baseUrl")} description={t("settings.ai.baseUrl.desc")}>
+          <div className="settings-row flex-col !items-start gap-1.5">
+            <div>
+              <div className="text-[13px] font-medium text-[var(--fg)]">{t("settings.ai.baseUrl")}</div>
+              <div className="mt-0.5 text-[11.5px] text-[var(--fg-muted)]">{t("settings.ai.baseUrl.desc")}</div>
+            </div>
             <Input
-              value={settings.aiBaseUrl}
-              onChange={(e) => update("aiBaseUrl", e.target.value)}
-              placeholder={AI_PROVIDER_DEFAULTS[settings.aiProvider]?.baseUrl ?? "https://…"}
+              value={currentConfig.baseUrl}
+              onChange={(e) => updateProviderConfig("baseUrl", e.target.value)}
+              placeholder={AI_PROVIDER_DEFAULTS[provider]?.baseUrl ?? "https://…"}
               variant="secondary"
-              className="w-[240px]"
+              className="w-full"
               aria-label="AI base URL"
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
             />
-          </SettingsRow>
+          </div>
 
-          <SettingsRow label={t("settings.ai.model")} description={t("settings.ai.model.desc")}>
+          <div className="settings-row flex-col !items-start gap-1.5">
+            <div>
+              <div className="text-[13px] font-medium text-[var(--fg)]">{t("settings.ai.model")}</div>
+              <div className="mt-0.5 text-[11.5px] text-[var(--fg-muted)]">{t("settings.ai.model.desc")}</div>
+            </div>
             <Input
-              value={settings.aiModel}
-              onChange={(e) => update("aiModel", e.target.value)}
-              placeholder={AI_PROVIDER_DEFAULTS[settings.aiProvider]?.model ?? "model"}
+              value={currentConfig.model}
+              onChange={(e) => updateProviderConfig("model", e.target.value)}
+              placeholder={AI_PROVIDER_DEFAULTS[provider]?.model ?? "model"}
               variant="secondary"
-              className="w-[240px]"
+              className="w-full"
               aria-label="AI model"
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
             />
-          </SettingsRow>
+          </div>
 
-          <SettingsRow label={t("settings.ai.apiKey")} description={keyStored ? t("settings.ai.apiKey.stored") : t("settings.ai.apiKey.desc")}>
-            <div className="flex items-center gap-2">
+          <div className="settings-row flex-col !items-start gap-1.5">
+            <div>
+              <div className="text-[13px] font-medium text-[var(--fg)]">{t("settings.ai.apiKey")}</div>
+              <div className="mt-0.5 text-[11.5px] text-[var(--fg-muted)]">{keyStored ? t("settings.ai.apiKey.stored") : t("settings.ai.apiKey.desc")}</div>
+            </div>
+            <div className="flex w-full items-center gap-2">
               <Input
                 type="password"
                 value={keyInput}
                 onChange={(e) => setKeyInput(e.target.value)}
                 placeholder={keyStored ? "••••••••" : "sk-…"}
                 variant="secondary"
-                className="w-[180px]"
+                className="flex-1"
                 aria-label="AI API key"
                 autoCapitalize="none"
                 autoCorrect="off"
@@ -392,7 +446,7 @@ function AiSection({ settings, update }: { settings: AppSettings; update: <K ext
                 </Button>
               )}
             </div>
-          </SettingsRow>
+          </div>
         </>
       ) : null}
     </div>
@@ -503,7 +557,7 @@ function CacheSection() {
       </SettingsRow>
 
       {cacheData.length ? (
-        <div className="border-t border-[var(--line)] pt-3 mt-3">
+        <div className="pt-3">
           <div className="text-[11px] font-medium uppercase tracking-wide text-[var(--fg-muted)] mb-2">
             {t("settings.cache.byWorkspace")}
           </div>
@@ -541,6 +595,30 @@ function CacheSection() {
           </Button>
           <Button size="sm" variant="outline" onPress={loadCacheData}>
             {t("settings.cache.refresh")}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onPress={() => {
+              const raw = localStorage.getItem("teamai-settings");
+              if (raw) {
+                try {
+                  const parsed = JSON.parse(raw);
+                  parsed.aiConfigs = {
+                    openai: { ...AI_PROVIDER_DEFAULTS.openai },
+                    anthropic: { ...AI_PROVIDER_DEFAULTS.anthropic },
+                  };
+                  localStorage.setItem("teamai-settings", JSON.stringify(parsed));
+                  notifySettingsChanged();
+                  toast.success(t("settings.cache.aiConfig.success"));
+                } catch {
+                  toast.danger(t("settings.cache.aiConfig.fail"));
+                }
+              }
+            }}
+          >
+            <Trash2 size={12} />
+            {t("settings.cache.aiConfig.reset")}
           </Button>
         </div>
       </div>

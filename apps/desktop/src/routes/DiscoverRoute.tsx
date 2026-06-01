@@ -20,6 +20,7 @@ import { getSkillDetailFromCache, putSkillDetailInCache } from "../lib/workspace
 import { formatError } from "../utils/format";
 import { DiscoverPage } from "../pages/DiscoverPage";
 import { SkillSafetyCard } from "../widgets/SkillSafetyCard";
+import { MarkdownPreview } from "../widgets/MarkdownPreview";
 import { InstallToToolsDialog } from "../widgets/InstallToToolsDialog";
 
 /** Debounce a changing value by `delay` ms. */
@@ -155,20 +156,58 @@ export function DiscoverRoute() {
     },
   });
 
+  const skillMarkdown = detail.data?.skill_markdown?.content;
+
   const detailPanel = useMemo(() => {
     if (!selected) return null;
     return (
       <div className="flex h-full flex-col">
+        {/* Header: name, version, installs, author */}
         <div className="border-b border-[var(--line)] px-5 py-4">
-          <div className="text-[15px] font-semibold tracking-tight text-[var(--fg)]">
-            {selected.name}
+          <div className="flex items-center gap-2">
+            <span className="text-[15px] font-semibold tracking-tight text-[var(--fg)]">
+              {selected.name}
+            </span>
+            {manifest?.version ? (
+              <span className="rounded bg-[var(--bg-soft)] px-1.5 py-0.5 text-[11px] font-mono text-[var(--fg-muted)]">
+                v{manifest.version}
+              </span>
+            ) : null}
           </div>
-          <div className="mt-0.5 text-[11.5px] text-[var(--fg-muted)]">{selected.source}</div>
+          <div className="mt-1 flex items-center gap-3 text-[11.5px] text-[var(--fg-muted)]">
+            <span>{selected.source}</span>
+            <span className="flex items-center gap-1">
+              <Download size={11} />
+              {selected.installs.toLocaleString()} {t("discover.installs")}
+            </span>
+          </div>
+          {manifest?.description ? (
+            <p className="mt-2 text-[13px] leading-[1.5] text-[var(--fg-secondary)]">
+              {manifest.description}
+            </p>
+          ) : null}
         </div>
+
+        {/* Body: SKILL.md content or loading/error */}
         <div className="scroll-area flex-1 px-5 py-4">
           {detail.isLoading ? (
             <div className="py-8 text-center text-[12px] text-[var(--fg-muted)]">
               {t("common.loading")}
+            </div>
+          ) : skillMarkdown ? (
+            <div className="space-y-4">
+              <MarkdownPreview content={skillMarkdown} compact />
+              {/* Safety card collapsed by default */}
+              {manifest ? (
+                <details className="group">
+                  <summary className="cursor-pointer text-[12px] font-medium text-[var(--fg-muted)] hover:text-[var(--fg)]">
+                    {t("discover.safetyPermissions")}
+                  </summary>
+                  <div className="mt-2">
+                    <SkillSafetyCard manifest={manifest} />
+                  </div>
+                </details>
+              ) : null}
             </div>
           ) : manifest ? (
             <div className="space-y-4">
@@ -185,6 +224,8 @@ export function DiscoverRoute() {
             </div>
           )}
         </div>
+
+        {/* Footer: install button */}
         <div className="border-t border-[var(--line)] px-5 py-3">
           <Button
             fullWidth
@@ -200,7 +241,7 @@ export function DiscoverRoute() {
         </div>
       </div>
     );
-  }, [selected, detail.isLoading, detail.error, manifest, t]);
+  }, [selected, detail.isLoading, detail.error, manifest, skillMarkdown, t]);
 
   return (
     <>

@@ -57,7 +57,7 @@ const SEVERITY_TONE: Record<string, PillTone> = {
  * All backed by the same SQLite source (dbListSkills).
  */
 export function MySkillsPage() {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const queryClient = useQueryClient();
   const [showImport, setShowImport] = useState(false);
 
@@ -68,7 +68,8 @@ export function MySkillsPage() {
 
   // AI provider config (same Settings the discover-page review uses).
   const settings = useTheme();
-  const aiConfigured = settings.aiProvider !== "none" && Boolean(settings.aiBaseUrl);
+  const activeAiConfig = settings.aiProvider !== "none" ? settings.aiConfigs[settings.aiProvider] : null;
+  const aiConfigured = settings.aiProvider !== "none" && Boolean(activeAiConfig?.baseUrl);
 
   const skills = useQuery({ queryKey: ["db-skills"], queryFn: dbListSkills, staleTime: 30 * 1000 });
   const runtimes = useQuery({ queryKey: ["db-runtimes"], queryFn: dbListRuntimes, staleTime: 5 * 60 * 1000 });
@@ -154,8 +155,9 @@ export function MySkillsPage() {
       reviewLocalSkill({
         skillId,
         provider: settings.aiProvider,
-        baseUrl: settings.aiBaseUrl,
-        model: settings.aiModel,
+        baseUrl: activeAiConfig?.baseUrl ?? "",
+        model: activeAiConfig?.model ?? "",
+        language: locale === "zh" ? "zh-CN" : "en",
       }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["db-skills"] }),
     onError: (err) => {

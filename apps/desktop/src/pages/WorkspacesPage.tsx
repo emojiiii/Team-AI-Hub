@@ -1,11 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, GitBranch, PanelLeftClose, PanelRightOpen, Search } from "lucide-react";
-import { type ReactNode, useRef, useState } from "react";
-import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
+import { GitBranch, Search } from "lucide-react";
+import { Drawer } from "@heroui/react";
+import type { ReactNode } from "react";
 import { useLocale } from "../hooks/useLocale";
 import type { SkillAsset, SkillVersion, Workspace, WorkspaceDetail } from "../lib/teamai";
 import { listWorkspaceBranches } from "../lib/teamai";
-import { SkillListWithFiles } from "../widgets/SkillListWithFiles";
 import { Pill } from "../widgets/Pill";
 
 export function WorkspacesPage({
@@ -24,6 +23,8 @@ export function WorkspacesPage({
   scanPending,
   isRefreshing,
   detailPanel,
+  detailOpen,
+  onDetailOpenChange,
   versions,
   selectedBranch,
   onSelectBranch,
@@ -43,6 +44,8 @@ export function WorkspacesPage({
   scanPending: boolean;
   isRefreshing?: boolean;
   detailPanel: ReactNode;
+  detailOpen: boolean;
+  onDetailOpenChange: (open: boolean) => void;
   versions: SkillVersion[];
   selectedBranch: string | undefined;
   onSelectBranch: (branch: string | undefined) => void;
@@ -55,193 +58,181 @@ export function WorkspacesPage({
     staleTime: 5 * 60 * 1000,
   });
 
-  const leftPanelRef = useRef<ImperativePanelHandle>(null);
-  const rightPanelRef = useRef<ImperativePanelHandle>(null);
-  const [leftCollapsed, setLeftCollapsed] = useState(false);
-  const [rightCollapsed, setRightCollapsed] = useState(false);
-
   return (
-    <PanelGroup
-      direction="horizontal"
-      autoSaveId="workspace-panels"
-      className="h-full min-h-0"
-    >
-      {/* Left panel: skill list */}
-      <Panel
-        ref={leftPanelRef}
-        defaultSize={42}
-        minSize={0}
-        collapsible
-        collapsedSize={0}
-        order={1}
-        onCollapse={() => setLeftCollapsed(true)}
-        onExpand={() => setLeftCollapsed(false)}
-      >
-        <section className="flex h-full min-w-0 min-h-0 flex-col">
-          <div className="flex items-center justify-between gap-3 px-5 pt-4 pb-3">
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-[13.5px] font-semibold tracking-tight text-[var(--fg)]">
-                {workspaceMeta ? workspaceMeta.full_name : t("workspaces.localWorkspace")}
-              </div>
-              <div className="mt-0.5 flex items-center gap-1.5">
-                {workspaceMeta ? (
-                  <>
-                    <Pill>{workspaceMeta.visibility}</Pill>
-                    <Pill tone="success">{workspaceMeta.permission}</Pill>
-                    {/* Branch selector inline */}
-                    <div className="flex items-center gap-1 ml-1">
-                      <GitBranch size={11} className="text-[var(--fg-muted)]" />
-                      <select
-                        value={selectedBranch ?? workspaceMeta.default_branch}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          onSelectBranch(val === workspaceMeta.default_branch ? undefined : val);
-                        }}
-                        className="appearance-none border-0 bg-transparent text-[11px] font-mono text-[var(--fg-muted)] outline-none cursor-pointer pr-3"
-                        style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 0 center" }}
-                      >
-                        {(branches.data ?? [{ name: workspaceMeta.default_branch, isDefault: true }]).map((b) => (
-                          <option key={b.name} value={b.name}>{b.name}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </>
-                ) : (
-                  <Pill>{t("workspaces.localBundles")}</Pill>
-                )}
+    <div className="flex h-full min-h-0">
+      <section className="flex min-w-0 flex-1 flex-col">
+        {/* Header: workspace info + search */}
+        <div className="border-b border-[var(--line)] bg-[var(--bg-elevated)] px-6 py-4">
+          <div className="mx-auto max-w-4xl">
+            {/* Workspace name + branch */}
+            <div className="flex items-center gap-3 mb-3">
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[14px] font-semibold tracking-tight text-[var(--fg)]">
+                  {workspaceMeta ? workspaceMeta.full_name : t("workspaces.localWorkspace")}
+                </div>
+                <div className="mt-0.5 flex items-center gap-1.5">
+                  {workspaceMeta ? (
+                    <>
+                      <Pill>{workspaceMeta.visibility}</Pill>
+                      <Pill tone="success">{workspaceMeta.permission}</Pill>
+                      <div className="flex items-center gap-1 ml-1">
+                        <GitBranch size={11} className="text-[var(--fg-muted)]" />
+                        <select
+                          value={selectedBranch ?? workspaceMeta.default_branch}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            onSelectBranch(val === workspaceMeta.default_branch ? undefined : val);
+                          }}
+                          className="appearance-none border-0 bg-transparent text-[11px] font-mono text-[var(--fg-muted)] outline-none cursor-pointer pr-3"
+                          style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 0 center" }}
+                        >
+                          {(branches.data ?? [{ name: workspaceMeta.default_branch, isDefault: true }]).map((b) => (
+                            <option key={b.name} value={b.name}>{b.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </>
+                  ) : (
+                    <Pill>{t("workspaces.localBundles")}</Pill>
+                  )}
+                </div>
               </div>
             </div>
-            {/* Panel toggle buttons */}
-            <div className="flex items-center gap-1">
-              {rightCollapsed && (
-                <button
-                  type="button"
-                  onClick={() => rightPanelRef.current?.expand()}
-                  className="grid size-6 place-items-center rounded text-[var(--fg-muted)] hover:text-[var(--fg)] hover:bg-[var(--bg-soft)] transition-colors"
-                  aria-label="Expand right panel"
-                >
-                  <PanelRightOpen size={14} />
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => leftPanelRef.current?.collapse()}
-                className="grid size-6 place-items-center rounded text-[var(--fg-muted)] hover:text-[var(--fg)] hover:bg-[var(--bg-soft)] transition-colors"
-                aria-label="Collapse left panel"
-              >
-                <PanelLeftClose size={14} />
-              </button>
-            </div>
-          </div>
 
-          <div className="px-5 pt-2 pb-2">
+            {/* Search */}
             <div className="relative">
-              <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--fg-muted)]" />
+              <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--fg-muted)]" />
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder={t("workspaces.filterSkills")}
-                className="w-full rounded-md border-0 bg-[var(--bg-soft)] py-2 pl-8 pr-3 text-[13px] outline-none focus:ring-2 focus:ring-[var(--brand-soft)]"
+                className="w-full rounded-lg border border-[var(--line)] bg-[var(--bg)] py-2.5 pl-10 pr-3 text-[14px] outline-none focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand-soft)]"
               />
             </div>
-            <div className="mt-2 flex items-center justify-between text-[11px] text-[var(--fg-muted)]">
-              <span>
-                {scanPending && !filteredAssets.length ? t("workspaces.scanning") : `${filteredAssets.length} ${filteredAssets.length === 1 ? t("workspaces.skillCount") : t("workspaces.skillCountPlural")}`}
+          </div>
+        </div>
+
+        {/* Grid content */}
+        <div className="scroll-area flex-1 px-6 py-5">
+          <div className="mx-auto max-w-4xl">
+            <div className="mb-3 flex items-center justify-between">
+              <span className="text-[12px] font-semibold uppercase tracking-wider text-[var(--fg-muted)]">
+                {scanPending && !filteredAssets.length
+                  ? t("workspaces.scanning")
+                  : `${filteredAssets.length} ${filteredAssets.length === 1 ? t("workspaces.skillCount") : t("workspaces.skillCountPlural")}`}
               </span>
               {isRefreshing && filteredAssets.length > 0 ? (
-                <span className="text-[var(--brand)]">{t("workspaces.syncing")}</span>
+                <span className="text-[11.5px] text-[var(--brand)]">{t("workspaces.syncing")}</span>
               ) : null}
             </div>
+
             {scanPending && !filteredAssets.length ? (
-              <div className="scan-progress">
+              <div className="scan-progress mb-4">
                 <div className="scan-progress__bar" />
               </div>
             ) : null}
-          </div>
 
-          <div className="scroll-area px-5 pb-5 pt-1">
             {scanPending && !filteredAssets.length ? (
-              <div className="skill-list">
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <div key={i} className="skill-skeleton">
-                    <div className="skill-skeleton__dot" />
-                    <div className="skill-skeleton__lines">
-                      <div className="skill-skeleton__line skill-skeleton__line--short" />
-                      <div className="skill-skeleton__line skill-skeleton__line--long" />
-                    </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <div key={i} className="rounded-[12px] border border-[var(--line)] bg-[var(--bg-elevated)] p-4">
+                    <div className="h-4 w-2/3 rounded bg-[var(--bg-soft)] animate-pulse" />
+                    <div className="mt-2 h-3 w-full rounded bg-[var(--bg-soft)] animate-pulse" />
+                    <div className="mt-1.5 h-3 w-1/2 rounded bg-[var(--bg-soft)] animate-pulse" />
                   </div>
                 ))}
               </div>
             ) : filteredAssets.length ? (
-              <SkillListWithFiles
-                assets={filteredAssets}
-                selected={selected}
-                selectedFile={selectedFile}
-                workspace={workspaceRef}
-                canViewFiles={canViewFiles}
-                onSelectAsset={(asset) => {
-                  onSelectAsset(asset);
-                  onSelectRef(undefined);
-                  onSelectFile(null);
-                }}
-                onSelectFile={onSelectFile}
-              />
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {filteredAssets.map((asset) => (
+                  <SkillCard
+                    key={asset.manifest.id}
+                    asset={asset}
+                    selected={selected?.manifest.id === asset.manifest.id}
+                    onSelect={() => {
+                      onSelectAsset(asset);
+                      onSelectRef(undefined);
+                      onSelectFile(null);
+                      onDetailOpenChange(true);
+                    }}
+                  />
+                ))}
+              </div>
             ) : (
-              <div className="empty-state border border-dashed border-[var(--line)] rounded-md">
+              <div className="empty-state rounded-md border border-dashed border-[var(--line)]">
                 <div className="empty-state__title">{t("workspaces.noSkills")}</div>
                 <div>{t("workspaces.noSkills.desc")}</div>
               </div>
             )}
           </div>
-        </section>
-      </Panel>
+        </div>
+      </section>
 
-      {/* Resize handle */}
-      <PanelResizeHandle className="group relative flex w-[9px] shrink-0 cursor-col-resize items-center justify-center">
-        {/* Thin vertical line */}
-        <div className="h-full w-px bg-[var(--line)] group-hover:bg-[var(--brand)]/60 group-data-[resize-handle-active]:bg-[var(--brand)] transition-colors" />
-        {/* Single toggle button */}
-        <button
-          type="button"
-          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 grid size-6 place-items-center rounded-full border border-[var(--line)] bg-[var(--bg-elevated)] text-[var(--fg-muted)] shadow-sm opacity-0 group-hover:opacity-100 hover:!border-[var(--brand)] hover:!text-[var(--brand)] hover:shadow transition-all"
-          onClick={(e) => {
-            e.stopPropagation();
-            if (leftCollapsed) {
-              leftPanelRef.current?.expand();
-            } else {
-              leftPanelRef.current?.collapse();
-            }
-          }}
-          aria-label={leftCollapsed ? "Expand left panel" : "Collapse left panel"}
-        >
-          {leftCollapsed ? <ChevronRight size={13} strokeWidth={2} /> : <ChevronLeft size={13} strokeWidth={2} />}
-        </button>
-      </PanelResizeHandle>
+      {/* Detail drawer */}
+      <Drawer isOpen={detailOpen} onOpenChange={onDetailOpenChange}>
+        <Drawer.Backdrop>
+          <Drawer.Content placement="right">
+            <Drawer.Dialog className="flex h-full w-[min(560px,92vw)] flex-col bg-[var(--bg-elevated)] outline-none">
+              {detailPanel}
+            </Drawer.Dialog>
+          </Drawer.Content>
+        </Drawer.Backdrop>
+      </Drawer>
+    </div>
+  );
+}
 
-      {/* Right panel: detail */}
-      <Panel
-        ref={rightPanelRef}
-        defaultSize={58}
-        minSize={0}
-        collapsible
-        collapsedSize={0}
-        order={2}
-        onCollapse={() => setRightCollapsed(true)}
-        onExpand={() => setRightCollapsed(false)}
-      >
-        <aside className="flex h-full min-w-0 min-h-0 flex-col bg-[var(--bg-soft)]">
-          {selected ? (
-            detailPanel
-          ) : (
-            <div className="empty-state mx-auto my-auto max-w-md">
-              <div className="empty-state__title">{t("workspaces.pickSkill")}</div>
-              <div>
-                {t("workspaces.pickSkill.desc")}
-              </div>
-            </div>
-          )}
-        </aside>
-      </Panel>
-    </PanelGroup>
+/** Card for a single skill in the grid */
+function SkillCard({
+  asset,
+  selected,
+  onSelect,
+}: {
+  asset: SkillAsset;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      className={`group relative flex w-full cursor-pointer flex-col gap-2 rounded-[12px] border p-4 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-soft)] ${
+        selected
+          ? "border-[var(--brand)] bg-[var(--brand-soft)]"
+          : "border-[var(--line)] bg-[var(--bg-elevated)] hover:border-[var(--brand)]/50 hover:bg-[var(--bg-soft)]"
+      }`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <span className="truncate text-[14px] font-semibold tracking-tight text-[var(--fg)]">
+          {asset.manifest.name}
+        </span>
+        <span className="shrink-0 rounded bg-[var(--bg-soft)] px-1.5 py-0.5 text-[10.5px] font-mono text-[var(--fg-muted)]">
+          v{asset.manifest.version}
+        </span>
+      </div>
+      {asset.manifest.description ? (
+        <p className="line-clamp-2 text-[12px] leading-[1.5] text-[var(--fg-muted)]">
+          {asset.manifest.description}
+        </p>
+      ) : (
+        <p className="text-[12px] text-[var(--fg-muted)] opacity-50">{asset.path}</p>
+      )}
+      {asset.manifest.tags.length > 0 ? (
+        <div className="mt-auto flex flex-wrap gap-1 pt-1">
+          {asset.manifest.tags.slice(0, 3).map((tag) => (
+            <span key={tag} className="rounded-full bg-[var(--bg-soft)] px-2 py-0.5 text-[10.5px] text-[var(--fg-muted)]">
+              {tag}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }

@@ -3908,6 +3908,7 @@ async fn review_local_skill(
     provider: String,
     base_url: String,
     model: String,
+    language: Option<String>,
 ) -> CommandResult<ai_review::ReviewResult> {
     if provider.trim().is_empty() || provider == "none" {
         return Err(CommandError::coded(
@@ -3957,6 +3958,7 @@ async fn review_local_skill(
         provider,
         base_url,
         model,
+        language,
         // workspace/skill_path/ref_name are only used by the download path; the
         // local reviewer walks `local_path` directly, so they stay empty.
         workspace: String::new(),

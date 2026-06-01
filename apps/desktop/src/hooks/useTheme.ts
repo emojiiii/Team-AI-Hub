@@ -8,7 +8,7 @@ function getSnapshot(): AppSettings {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) return JSON.parse(raw);
   } catch { /* ignore */ }
-  return { theme: "system", accentColor: "blue", language: "auto", proxyMode: "none", proxyUrl: "", requestTimeout: 30, aiProvider: "none", aiBaseUrl: "", aiModel: "" };
+  return { theme: "system", accentColor: "blue", language: "auto", proxyMode: "none", proxyUrl: "", requestTimeout: 30, aiProvider: "none", aiConfigs: { openai: { baseUrl: "https://api.openai.com/v1", model: "gpt-5.5" }, anthropic: { baseUrl: "https://api.anthropic.com/v1", model: "claude-opus-4-6" } } };
 }
 
 let cachedSettings = getSnapshot();

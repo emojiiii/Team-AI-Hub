@@ -85,6 +85,7 @@ const zh: Record<string, string> = {
   "discover.empty": "没有找到技能",
   "discover.empty.desc": "换个关键词试试。",
   "discover.detailUnavailable": "暂时无法加载这个技能的详情，可能是仓库未公开或网络问题。",
+  "discover.safetyPermissions": "安全与权限",
   "discover.cat.all": "精选",
   "discover.cat.writing": "写作",
   "discover.cat.design": "设计",
@@ -232,6 +233,13 @@ const zh: Record<string, string> = {
   "settings.cache.clearAll": "清除全部缓存",
   "settings.cache.refresh": "刷新",
   "settings.cache.clearWorkspace": "清除此 workspace 缓存",
+  "settings.cache.aiConfig": "AI 配置",
+  "settings.cache.aiConfig.desc": "重置 AI 审查的服务商配置（Base URL、模型）为默认值",
+  "settings.cache.aiConfig.reset": "重置 AI 配置",
+  "settings.cache.aiConfig.success": "AI 配置已重置为默认值",
+  "settings.cache.aiConfig.fail": "重置失败",
+  "settings.cache.resetAi": "重置 AI 配置",
+  "settings.cache.resetAi.desc": "清除自定义的 AI 服务商配置，恢复默认值",
 
   // --- Subscribe Modal ---
   "subscribe.title": "订阅",
@@ -603,6 +611,7 @@ const en: Record<string, string> = {
   "discover.empty": "No skills found",
   "discover.empty.desc": "Try a different keyword.",
   "discover.detailUnavailable": "Couldn't load this skill's details — the repo may be private or the network is down.",
+  "discover.safetyPermissions": "Safety & permissions",
   "discover.cat.all": "Featured",
   "discover.cat.writing": "Writing",
   "discover.cat.design": "Design",
@@ -750,6 +759,13 @@ const en: Record<string, string> = {
   "settings.cache.clearAll": "Clear all cache",
   "settings.cache.refresh": "Refresh",
   "settings.cache.clearWorkspace": "Clear this workspace cache",
+  "settings.cache.aiConfig": "AI Configuration",
+  "settings.cache.aiConfig.desc": "Reset AI review provider config (Base URL, model) to defaults",
+  "settings.cache.aiConfig.reset": "Reset AI Config",
+  "settings.cache.aiConfig.success": "AI config has been reset to defaults",
+  "settings.cache.aiConfig.fail": "Reset failed",
+  "settings.cache.resetAi": "Reset AI config",
+  "settings.cache.resetAi.desc": "Clear custom AI provider config and restore defaults",
 
   // --- Subscribe Modal ---
   "subscribe.title": "Subscribe to",

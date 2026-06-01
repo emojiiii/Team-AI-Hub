@@ -52,6 +52,7 @@ export function WorkspaceSkillsRoute() {
   const [selectedRef, setSelectedRef] = useState<string | undefined>();
   const [selectedFile, setSelectedFileRaw] = useState<string | null>(persistedFile);
   const [query, setQuery] = useState("");
+  const [detailOpen, setDetailOpen] = useState(false);
   const [subscribeOpen, setSubscribeOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
@@ -264,7 +265,12 @@ export function WorkspaceSkillsRoute() {
       <WorkspacesPage
         filteredAssets={filteredAssets}
         selected={selected}
-        onSelectAsset={setSelected}
+        onSelectAsset={(asset) => {
+          setSelected(asset);
+          setSelectedRef(undefined);
+          setSelectedFile(null);
+          setDetailOpen(true);
+        }}
         onSelectRef={setSelectedRef}
         selectedFile={selectedFile}
         onSelectFile={setSelectedFile}
@@ -279,6 +285,11 @@ export function WorkspaceSkillsRoute() {
         versions={workspaceDetail?.versions ?? []}
         selectedBranch={selectedRef}
         onSelectBranch={setSelectedRef}
+        detailOpen={detailOpen}
+        onDetailOpenChange={(open) => {
+          setDetailOpen(open);
+          if (!open) setSelected(null);
+        }}
         detailPanel={
           selected ? (
             <SkillDetail

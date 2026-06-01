@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight, Folder } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { SkillAsset } from "../lib/teamai";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useLocale } from "../hooks/useLocale";
@@ -153,7 +153,10 @@ function SkillItem({
   // Mount the file tree only after the first expand, then keep it mounted so
   // both expand and collapse animate (and the query fires only once needed).
   const [hasExpanded, setHasExpanded] = useState(isExpanded);
-  if (isExpanded && !hasExpanded) setHasExpanded(true);
+  useEffect(() => {
+    if (isExpanded) setHasExpanded(true);
+  }, [isExpanded]);
+
   return (
     <div>
       <SkillCard

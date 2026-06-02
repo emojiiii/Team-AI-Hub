@@ -161,8 +161,16 @@ jobs:
           tauriScript: pnpm tauri
           args: --target ${{ matrix.rustTarget }}
           retryAttempts: 2
-          uploadWorkflowArtifacts: true
-          workflowArtifactNamePattern: skill-library-v${{ needs.metadata.outputs.version }}-[platform]-[arch]-[bundle]
+
+      - name: Upload Tauri bundle workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: skill-library-v${{ needs.metadata.outputs.version }}-${{ matrix.os }}-${{ matrix.arch }}-bundle
+          path: |
+            target/${{ matrix.rustTarget }}/release/bundle/dmg/*.dmg
+            target/${{ matrix.rustTarget }}/release/bundle/nsis/*.exe
+            target/${{ matrix.rustTarget }}/release/bundle/msi/*.msi
+          if-no-files-found: error
 
       - name: Package portable app (macOS)
         if: runner.os == 'macOS'
@@ -196,6 +204,9 @@ jobs:
       - build-desktop
     if: ${{ needs.metadata.outputs.isRelease == 'true' }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
       - name: Check version tag availability
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -217,6 +228,7 @@ jobs:
       - name: Create draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.metadata.outputs.tag }}
         run: |
           set -euo pipefail

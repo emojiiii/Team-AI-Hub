@@ -1,6 +1,6 @@
 # Provider Adapter 重构方案
 
-> 目标：在保持现有 GitHub 主流程可用的前提下，把 GitHub-only 实现重构为可插拔 Provider Adapter，后续接入 GitLab.com、GitLab 自建内网实例、Gitee 公网，并为企业内网 Gitee / 其他 Git 托管平台预留扩展空间。
+> 目标：在保持现有 GitHub 主流程可用的前提下，把 GitHub-only 实现重构为可插拔 Provider Adapter，后续接入 GitLab.com、GitLab 自建内网实例、Gitee 公网，并为 WebDAV / 企业内网文件存储 / 其他 Git 托管平台预留扩展空间。
 
 ## 1. 背景
 
@@ -21,14 +21,16 @@
 2. 支持多个 Provider 实例：例如 `github.com`、`gitlab.com`、`gitlab-internal.company.local`、`gitee.com` 可以同时存在。
 3. 支持内网 GitLab：用户可以配置 `web_base_url` / `api_base_url`，不假设所有 GitLab 都在公网。
 4. 支持 Gitee：优先接入 Gitee OpenAPI v5 公网；企业版 / 私有化实例用同一配置模型预留。
-5. 上层按能力降级：Provider 不支持 Discussions、GraphQL、device flow、webhook、邀请时，UI 显示不可用或走轮询/PAT 兜底。
-6. 保持数据可迁移：已有 `provider = "github"` 的 workspace、subscription、lockfile 可以无损迁移到新 provider instance。
+5. 支持 WebDAV 作为文件存储型 Skill Source：用于内网 NAS、Nextcloud、ownCloud、坚果云等场景的发现、安装、同步和简单上传。
+6. 上层按能力降级：Provider 不支持 Discussions、GraphQL、device flow、webhook、邀请时，UI 显示不可用或走轮询/PAT 兜底。
+7. 保持数据可迁移：已有 `provider = "github"` 的 workspace、subscription、lockfile 可以无损迁移到新 provider instance。
 
 ## 3. 非目标
 
 - 不在这次重构中托管用户代码内容；仓库内容仍从 Provider 按需读取或下载。
 - 不实现影子权限系统；权限仍以 Provider 返回结果为准。
 - 不强行让所有 Provider 支持 GitHub Discussions 等社交能力。
+- 不把 WebDAV 伪装成 Git Provider；WebDAV 没有 branch、tag、commit、PR/MR 语义，只实现文件源能力。
 - 不一次性完成所有写路径。读路径和同步路径应先抽象并落地，发布/邀请/评论后续分阶段迁移。
 
 ## 4. 推荐架构
@@ -42,6 +44,7 @@ pub enum ProviderKind {
     GitHub,
     GitLab,
     Gitee,
+    WebDav,
     Custom(String),
 }
 
@@ -63,6 +66,18 @@ pub struct ProviderInstance {
 | `github.com` | `GitHub` | `https://github.com` | `https://api.github.com` |
 | `gitlab.com` | `GitLab` | `https://gitlab.com` | `https://gitlab.com/api/v4` |
 | `gitee.com` | `Gitee` | `https://gitee.com` | `https://gitee.com/api/v5` |
+
+WebDAV 不提供公网默认实例，因为它通常是用户或企业自建服务。用户新增实例时配置：
+
+```json
+{
+  "id": "webdav-company",
+  "kind": "webdav",
+  "displayName": "公司 WebDAV",
+  "webBaseUrl": "https://dav.company.local/skills",
+  "apiBaseUrl": "https://dav.company.local/skills"
+}
+```
 
 自建 GitLab 由用户新增实例：
 
@@ -108,11 +123,17 @@ pub struct WorkspaceRef {
 
 ```rust
 pub trait ProviderFactory: Send + Sync {
-    fn build(
+    fn build_source(
         &self,
         instance: &ProviderInstance,
         credential: Option<&ProviderCredential>,
-    ) -> skill_library_provider::Result<Box<dyn Provider>>;
+    ) -> skill_library_provider::Result<Box<dyn SkillSourceProvider>>;
+
+    fn build_git(
+        &self,
+        instance: &ProviderInstance,
+        credential: Option<&ProviderCredential>,
+    ) -> skill_library_provider::Result<Option<Box<dyn GitRepositoryProvider>>>;
 }
 ```
 
@@ -120,24 +141,53 @@ pub trait ProviderFactory: Send + Sync {
 
 1. 解析 `WorkspaceRef.provider` 得到 instance。
 2. 读取该 instance 对应 credential。
-3. 通过 factory 创建 `Box<dyn Provider>`。
-4. 调用 `Provider` trait 或 optional capability trait。
+3. 通过 factory 创建 `Box<dyn SkillSourceProvider>`。
+4. 只有需要 Git 协作能力时，再通过 `build_git(...)` 获取 `GitRepositoryProvider`。
 
-### 4.4 Provider Trait 分层
+### 4.4 Skill Source 与 Git 协作能力分层
+
+接入 WebDAV 后，不能再把所有远端来源都假设成 Git 仓库。建议把能力拆成两层：
+
+- `SkillSourceProvider`：Skill Library 最小可用能力，负责列目录、读文件、扫描 Skill、下载快照、同步变更。GitHub/GitLab/Gitee/WebDAV 都应实现。
+- `GitRepositoryProvider`：Git 托管平台能力，负责 branch、tag、commit、compare、PR/MR、成员、邀请、webhook、Discussions 等。只有 GitHub/GitLab/Gitee 这类 Git 平台实现。
+
+```rust
+#[async_trait]
+pub trait SkillSourceProvider: Send + Sync {
+    fn id(&self) -> &str;
+    fn capabilities(&self) -> ProviderCapabilities;
+
+    async fn list_sources(&self, opts: PageOpts) -> Result<Page<Workspace>>;
+    async fn get_source(&self, reference: &WorkspaceRef) -> Result<Workspace>;
+    async fn list_files(&self, reference: &WorkspaceRef, at: &SourceRef) -> Result<Vec<FileEntry>>;
+    async fn read_file(&self, reference: &WorkspaceRef, at: &SourceRef, path: &str) -> Result<FileBlob>;
+    async fn download_snapshot(
+        &self,
+        reference: &WorkspaceRef,
+        at: &SourceRef,
+        destination: &Path,
+        on_progress: &mut dyn FnMut(u64, Option<u64>),
+    ) -> Result<ArchiveDownload>;
+}
+
+pub enum SourceRef {
+    Latest,
+    Version(String),
+    Git(GitRef),
+    Revision(String),
+}
+```
+
+WebDAV 的 `SourceRef::Latest` 可以映射到目录当前内容；`SourceRef::Version("1.2.0")` 可以映射到 `versions/1.2.0/` 或 `.skill-library/index.json` 中声明的位置。Git 平台则把 `SourceRef::Git(...)` 映射到 branch/tag/sha。
+
+### 4.5 Provider Trait 分层
 
 现有 `Provider` trait 已覆盖很多读写能力，但 GitHub 实现里还有不少能力在 trait 之外。建议拆成基础能力 + 可选扩展能力：
 
 ```rust
 #[async_trait]
-pub trait Provider: Send + Sync {
-    fn id(&self) -> &str;
-    fn capabilities(&self) -> ProviderCapabilities;
-
+pub trait GitRepositoryProvider: SkillSourceProvider {
     async fn current_user(&self) -> Result<ProviderUser>;
-    async fn list_workspaces(&self, opts: PageOpts) -> Result<Page<Workspace>>;
-    async fn get_workspace(&self, reference: &WorkspaceRef) -> Result<Workspace>;
-    async fn list_files(&self, reference: &WorkspaceRef, at: &GitRef) -> Result<Vec<FileEntry>>;
-    async fn read_file(&self, reference: &WorkspaceRef, at: &GitRef, path: &str) -> Result<FileBlob>;
     async fn list_tags(&self, reference: &WorkspaceRef, opts: PageOpts) -> Result<Page<Tag>>;
     async fn list_releases(&self, reference: &WorkspaceRef, opts: PageOpts) -> Result<Page<Release>>;
     async fn compare_refs(&self, reference: &WorkspaceRef, base: &GitRef, head: &GitRef) -> Result<RefComparison>;
@@ -170,9 +220,9 @@ pub trait SocialProvider: Send + Sync {
 }
 ```
 
-这样 GitLab / Gitee 可以先实现 `Provider + ArchiveProvider + PublishProvider`，暂不实现 `SocialProvider`。
+这样 GitLab / Gitee 可以先实现 `SkillSourceProvider + GitRepositoryProvider + ArchiveProvider + PublishProvider`，暂不实现 `SocialProvider`。WebDAV 只实现 `SkillSourceProvider`，可选实现 `DirectWriteProvider`，不实现 Git 协作能力。
 
-### 4.5 Capability 模型
+### 4.6 Capability 模型
 
 现有 `ProviderCapabilities` 继续使用，但需要从 bool 变成更细粒度的能力声明：
 
@@ -190,6 +240,8 @@ pub struct ProviderCapabilities {
     pub members: Capability,
     pub webhooks: Capability,
     pub discussions: Capability,
+    pub file_storage: Capability,
+    pub versions_index: Capability,
 }
 
 pub enum Capability {
@@ -246,6 +298,7 @@ provider:{instance_id}:{login}
 | GitLab.com | PAT 优先，OAuth loopback 后续 | PAT 容易先跑通；OAuth 需要 client 配置 |
 | GitLab 自建 | PAT 优先 | 内网实例未必配置 OAuth app/device flow |
 | Gitee | PAT / access token 优先 | 先使用 token，OAuth 后续 spike |
+| WebDAV | username/password 或 app password/token | 多数 WebDAV 服务依赖 Basic/Auth token；只存 keychain，不写明文配置 |
 
 上层命令改成：
 
@@ -323,7 +376,59 @@ Gitee 重点差异：
 - Gitee OpenAPI v5 与 GitHub 有相似 endpoint，但字段、分页、鉴权参数、企业能力可能不同。
 - Gitee 企业版 / 私有化可能使用不同 API 版本，应通过 `ProviderInstance` 配置预留。
 
-### 6.5 crates/skill-library-sync
+### 6.5 新增 crates/skill-library-provider-webdav
+
+WebDAV adapter 不实现 Git 协作能力，只实现文件存储型 Skill Source。
+
+第一阶段能力：
+
+- `PROPFIND` 列根目录和递归目录，发现 `SKILL.md` / `manifest.yaml` / `manifest.json`。
+- `GET` 读取单文件。
+- 递归下载目录到本地临时目录，返回 `ArchiveDownload` 等价结构。
+- 基于 `ETag` / `Last-Modified` / 内容 hash 做同步变更检测。
+- 支持可选 `.skill-library/index.json`，声明 skill 列表、版本、latest 指针和 checksum。
+
+可选写能力：
+
+- `MKCOL` 创建目录。
+- `PUT` 上传 skill 文件。
+- `MOVE` / `COPY` 用于版本目录 promote。
+- 没有 compare/PR/MR 时，发布只能是直接上传或上传到 `incoming/` 等待人工处理。
+
+推荐目录约定：
+
+```text
+/skills/
+  .skill-library/index.json
+  code-reviewer/
+    latest/
+      SKILL.md
+    versions/
+      1.0.0/
+      1.1.0/
+```
+
+`index.json` 示例：
+
+```json
+{
+  "schemaVersion": 1,
+  "skills": [
+    {
+      "id": "code-reviewer",
+      "latest": "versions/1.1.0",
+      "versions": {
+        "1.0.0": { "path": "code-reviewer/versions/1.0.0" },
+        "1.1.0": { "path": "code-reviewer/versions/1.1.0" }
+      }
+    }
+  ]
+}
+```
+
+如果没有 `index.json`，adapter 退化为扫描目录当前内容，只支持 latest install，不承诺历史版本和稳定 rollback。
+
+### 6.6 crates/skill-library-sync
 
 这是最关键的去 GitHub 化模块。
 
@@ -338,7 +443,7 @@ Gitee 重点差异：
 | `add_github_workspace_with_webhook` | `add_remote_workspace_with_webhook` |
 | `github_provider(...)` | `provider_for_workspace(...)` |
 
-同时把 `scan.rs` 从 `provider: &GitHubProvider` 改为 `provider: &dyn Provider` 或泛型 `P: Provider + ?Sized`。如果需要批量读取优化，额外定义：
+同时把 `scan.rs` 从 `provider: &GitHubProvider` 改为 `source: &dyn SkillSourceProvider` 或泛型 `P: SkillSourceProvider + ?Sized`。如果需要批量读取优化，额外定义：
 
 ```rust
 pub trait BatchReadProvider {
@@ -348,7 +453,7 @@ pub trait BatchReadProvider {
 
 没有批量能力时，默认 fallback 为多次 `read_file`。
 
-下载路径必须依赖 `ArchiveProvider`，不能再调用 `GitHubProvider::download_tarball`：
+下载路径必须依赖 `SkillSourceProvider::download_snapshot` 或 `ArchiveProvider`，不能再调用 `GitHubProvider::download_tarball`：
 
 - `download_skill_source`
 - `download_skill_for_install`
@@ -356,7 +461,7 @@ pub trait BatchReadProvider {
 - `download_review_tarball`
 - rollback / sync 自动更新
 
-### 6.6 apps/desktop/src-tauri
+### 6.7 apps/desktop/src-tauri
 
 新增通用命令：
 
@@ -381,7 +486,7 @@ pub trait BatchReadProvider {
 
 这样前端可以分阶段迁移，不需要一次性改完所有页面。
 
-### 6.7 crates/skill-library-cli
+### 6.8 crates/skill-library-cli
 
 CLI 应从 provider 参数开始泛化：
 
@@ -401,7 +506,7 @@ skill-library login github
 
 内部解析为 `provider-id = github.com`。
 
-### 6.8 前端
+### 6.9 前端
 
 前端分两层处理：
 
@@ -415,23 +520,25 @@ skill-library login github
 - Discover/Subscriptions/MySkills：workspace 展示 provider badge。
 - Publish/Invitations/Activity：GitHub PR / GitHub invitation 文案改成 Change Request / Provider invitation。
 - SkillComments：仅当 `capabilities.discussions == Supported` 时展示；否则隐藏或显示 Provider 不支持。
+- WebDAV workspace：隐藏 PR、邀请、成员、Discussions；展示“文件存储源”标识和直接上传/同步能力。
 
 ## 7. Provider 差异矩阵
 
-| 能力 | GitHub | GitLab.com / 自建 | Gitee |
-|---|---|---|---|
-| 公网默认实例 | 支持 | 支持 | 支持 |
-| 内网实例 | GitHub Enterprise 可预留 | 必须支持 | 企业版预留 |
-| 认证第一阶段 | PAT + device flow | PAT | access token / PAT |
-| 仓库列表 | 支持 | projects | user/org/enterprise repos |
-| 文件树 | REST tree + GraphQL 优化 | repository tree | contents / tree 需 spike |
-| 单文件读取 | contents/blob | repository files/raw | contents |
-| tag/release | 支持 | 支持 | 支持 |
-| archive 下载 | tarball/codeload | repository archive 需实现 | 需 spike |
-| PR/MR | Pull Request | Merge Request | Pull Request |
-| 邀请/成员 | collaborators/org/team | members/invitations 差异较大 | collaborators/企业能力差异 |
-| webhook | HMAC header | token/signing 行为不同 | webhook 类型和签名需 spike |
-| Discussions/评论社区 | GitHub Discussions | 无等价通用能力 | 无等价通用能力 |
+| 能力 | GitHub | GitLab.com / 自建 | Gitee | WebDAV |
+|---|---|---|---|---|
+| 公网默认实例 | 支持 | 支持 | 支持 | 无默认实例 |
+| 内网实例 | GitHub Enterprise 可预留 | 必须支持 | 企业版预留 | 必须支持 |
+| 认证第一阶段 | PAT + device flow | PAT | access token / PAT | username/password 或 app password/token |
+| 来源列表 | repos | projects | user/org/enterprise repos | 用户配置的根目录或 index |
+| 文件树 | REST tree + GraphQL 优化 | repository tree | contents / tree 需 spike | PROPFIND |
+| 单文件读取 | contents/blob | repository files/raw | contents | GET |
+| tag/release | 支持 | 支持 | 支持 | 不支持；用 index 版本目录替代 |
+| archive 下载 | tarball/codeload | repository archive 需实现 | 需 spike | 递归下载目录，本地组装快照 |
+| PR/MR | Pull Request | Merge Request | Pull Request | 不支持 |
+| 邀请/成员 | collaborators/org/team | members/invitations 差异较大 | collaborators/企业能力差异 | 不支持通用成员 API |
+| webhook | HMAC header | token/signing 行为不同 | webhook 类型和签名需 spike | 通常不支持；轮询 |
+| Discussions/评论社区 | GitHub Discussions | 无等价通用能力 | 无等价通用能力 | 不支持 |
+| 直接上传 | contents API | repository file API | contents API | PUT/MKCOL |
 
 ## 8. 分阶段落地计划
 
@@ -461,16 +568,16 @@ skill-library login github
 
 ### Phase 2：读路径去 GitHub 化
 
-- `scan.rs` 改为依赖 `Provider` trait。
+- `scan.rs` 改为依赖 `SkillSourceProvider` trait。
 - `skill-library-sync` 入口重命名为 remote/provider 通用名称。
-- `download_skill_source`、`download_skill_for_install`、`prepare_skill_for_review` 依赖 `ArchiveProvider`。
+- `download_skill_source`、`download_skill_for_install`、`prepare_skill_for_review` 依赖 `SkillSourceProvider::download_snapshot`。
 - Tauri/CLI 扫描和详情命令改走通用入口。
 
 验收：
 
 - GitHub 读路径行为不变。
 - sync crate 不再直接构造 `GitHubProvider`。
-- 没有实现 `ArchiveProvider` 的 adapter 会返回明确 capability error。
+- 没有实现快照下载能力的 adapter 会返回明确 capability error。
 
 ### Phase 3：GitLab adapter
 
@@ -501,10 +608,28 @@ skill-library login github
 - 能扫描 Skill、查看详情、下载并安装。
 - Gitee 不支持或未实现的能力在 UI 中正确隐藏/降级。
 
-### Phase 5：写路径泛化
+### Phase 5：WebDAV adapter
+
+- 新增 `skill-library-provider-webdav`。
+- 支持用户配置 WebDAV base URL、根目录、认证方式。
+- 实现 PROPFIND/GET 读路径和递归目录下载。
+- 支持可选 `.skill-library/index.json` 作为版本索引。
+- 没有 index 时退化为 latest-only 文件源。
+- 可选实现 PUT/MKCOL 直接上传；默认不启用覆盖式发布。
+
+验收：
+
+- 能添加 WebDAV 目录作为 Skill Source。
+- 能扫描 Skill、查看详情、下载并安装。
+- 有 index 时支持版本选择；无 index 时只显示 latest。
+- WebDAV workspace 不展示 PR/MR、邀请、成员、Discussions。
+- ETag/Last-Modified 不可靠时能 fallback 到内容 hash。
+
+### Phase 6：写路径泛化
 
 - 把 publish PR 改成 `ChangeRequest`。
 - GitHub 使用 Pull Request，GitLab 使用 Merge Request，Gitee 使用 Pull Request。
+- WebDAV 不进入 ChangeRequest 流程；直接上传是单独 capability。
 - 邀请/成员能力按 Provider capability 展示。
 - Activity/Notifications/Webhook 改为 provider-aware。
 
@@ -512,12 +637,14 @@ skill-library login github
 
 - GitHub 发布行为不回退。
 - GitLab/Gitee 至少能创建 change request 或明确显示“不支持/未配置”。
+- WebDAV 直接上传必须有显式确认，且不能伪装成已审核发布。
 - 权限校验仍使用当前用户 token，不通过 bot 提权。
 
-### Phase 6：社交能力和产品打磨
+### Phase 7：社交能力和产品打磨
 
 - GitHub Discussions 保持为 GitHub-only optional feature。
 - GitLab/Gitee 可考虑 issue/comment 替代，但必须作为独立 capability，不污染基础 Provider。
+- WebDAV 不显示社交能力。
 - UI 文案从 GitHub-only 改为 Provider-aware。
 
 验收：
@@ -530,9 +657,10 @@ skill-library login github
 1. Provider contract tests：对每个 adapter 跑同一组 trait 行为测试。
 2. Mock HTTP tests：覆盖分页、401/403/404、rate limit、path encode、archive 下载失败。
 3. 迁移测试：旧 `credentials.github`、旧 `provider = "github"`、旧 storage key。
-4. CLI smoke：`login`、`workspace add`、`scan-remote`、`sync`。
-5. Desktop command tests：通用 command 和 GitHub wrapper 都要保留测试。
-6. UI smoke：Provider 选择、登录状态、workspace picker、详情页、安装流程。
+4. WebDAV contract tests：用本地 mock WebDAV server 覆盖 PROPFIND、GET、PUT、MKCOL、ETag/Last-Modified 缺失和路径编码。
+5. CLI smoke：`login`、`workspace add`、`scan-remote`、`sync`。
+6. Desktop command tests：通用 command 和 GitHub wrapper 都要保留测试。
+7. UI smoke：Provider 选择、登录状态、workspace picker、详情页、安装流程。
 
 ## 10. 风险与处理
 
@@ -541,16 +669,21 @@ skill-library login github
 | GitLab nested namespace 打破 `owner/repo` 假设 | `owner` 允许包含 `/`，保存 `remote_id` |
 | 自建 GitLab 证书/代理/内网不可达 | ProviderInstance 增加 timeout/proxy/tls 配置预留，错误统一 `NetworkError` |
 | Gitee API v5/企业版 API 差异 | 公网 v5 先落地，企业版作为单独 instance + capability spike |
+| WebDAV 没有 Git 版本语义 | 通过 `.skill-library/index.json` 或目录约定表达版本；无 index 时 latest-only |
+| WebDAV ETag 不稳定或缺失 | 退化为 Last-Modified + 内容 hash；缓存策略不能只信 ETag |
+| WebDAV 直接上传覆盖风险 | 默认关闭覆盖式发布；需要显式确认或上传到 `incoming/` |
 | 不同 Provider archive 解压根目录不同 | `ArchiveDownload` 只返回 `extracted_root`，adapter 内部处理 |
 | webhook 签名差异 | 不在基础 trait 里假设 HMAC；每个 adapter 自己 verify |
-| UI 文案仍写死 GitHub | Phase 6 做 locale 全量扫描和替换 |
+| UI 文案仍写死 GitHub | Phase 7 做 locale 全量扫描和替换 |
 | 发布写路径权限复杂 | 读路径先落地；写路径以 capability + provider-specific spike 推进 |
 
 ## 11. 建议优先级
 
-推荐先做 Phase 1 + Phase 2。原因是当前项目已经有 Provider trait，但调用层绕过了它；只要把 factory、credential、sync 入口理顺，GitLab/Gitee 接入就变成“新增 adapter + contract tests”，而不是在 Tauri/CLI/前端各处继续复制 GitHub 分支。
+推荐先做 Phase 1 + Phase 2。原因是当前项目已经有 Provider trait，但调用层绕过了它；只要把 factory、credential、sync 入口理顺，GitLab/Gitee/WebDAV 接入就变成“新增 adapter + contract tests”，而不是在 Tauri/CLI/前端各处继续复制 GitHub 分支。
 
 第二优先级是 GitLab adapter，因为内网诉求最强，且 GitLab 自建实例要求架构真正支持可配置 base URL。Gitee 放在 GitLab 后，能复用已经验证过的 provider instance、credential、archive、capability 降级机制。
+
+WebDAV 可以和 GitLab adapter 并行 spike。它对 Git 协作能力依赖较少，适合作为 `SkillSourceProvider` 抽象的反向验证：如果 WebDAV 能在不实现 Git 能力的情况下完成发现、详情、下载、安装、同步，说明底层 source 抽象是干净的。
 
 ## 12. 外部参考
 
@@ -560,3 +693,4 @@ skill-library login github
 - Gitee OpenAPI v5: https://gitee.com/api/v5/swagger
 - Gitee OpenAPI v5 SDK / Repositories API: https://gitee.com/sdk
 - Gitee WebHook 帮助中心: https://help.gitee.com
+- WebDAV RFC 4918: https://www.rfc-editor.org/rfc/rfc4918

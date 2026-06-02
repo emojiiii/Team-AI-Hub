@@ -1,0 +1,573 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Auto bump version when version is empty"
+        required: false
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      version:
+        description: "Release version, e.g. v0.1.1. Leave empty to auto-bump."
+        required: false
+        type: string
+
+permissions:
+  actions: write
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: short
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  prepare:
+    name: Prepare release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      release_sha: ${{ steps.release.outputs.release_sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Prepare release version
+        id: release
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+
+          read_current_version() {
+            node <<'NODE'
+          const fs = require("node:fs");
+
+          const desktopPackage = JSON.parse(fs.readFileSync("apps/desktop/package.json", "utf8"));
+          const tauriConfig = JSON.parse(fs.readFileSync("apps/desktop/src-tauri/tauri.conf.json", "utf8"));
+          const cargoToml = fs.readFileSync("Cargo.toml", "utf8");
+          const cargoVersion = cargoToml.match(/\[workspace\.package\][\s\S]*?^version\s*=\s*"([^"]+)"/m)?.[1];
+
+          const versions = [
+            ["apps/desktop/package.json", desktopPackage.version],
+            ["apps/desktop/src-tauri/tauri.conf.json", tauriConfig.version],
+            ["Cargo.toml [workspace.package]", cargoVersion],
+          ];
+          const missing = versions.filter(([, version]) => !version);
+          if (missing.length) {
+            console.error(`Missing version in: ${missing.map(([name]) => name).join(", ")}`);
+            process.exit(1);
+          }
+
+          const unique = new Set(versions.map(([, version]) => version));
+          if (unique.size !== 1) {
+            console.error("Version mismatch:\n" + versions.map(([name, version]) => `- ${name}: ${version}`).join("\n"));
+            process.exit(1);
+          }
+
+          const version = versions[0][1];
+          if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
+            console.error(`Version must be semver-like, got: ${version}`);
+            process.exit(1);
+          }
+
+          console.log(version);
+          NODE
+          }
+
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            version="$(read_current_version)"
+            tag="${GITHUB_REF_NAME}"
+            expected_tag="v${version}"
+            if [ "${tag}" != "${expected_tag}" ]; then
+              echo "::error::Tag ${tag} does not match version files (${expected_tag}). Update apps/desktop/package.json, apps/desktop/src-tauri/tauri.conf.json, and Cargo.toml or push the matching tag."
+              exit 1
+            fi
+
+            release_sha="$(git rev-list -n 1 "${tag}")"
+            {
+              echo "version=${version}"
+              echo "tag=${tag}"
+              echo "release_sha=${release_sha}"
+            } >> "${GITHUB_OUTPUT}"
+            echo "Prepared Skill Library ${tag} from existing tag."
+            exit 0
+          fi
+
+          if [ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]; then
+            echo "::error::Release workflow only supports v* tag pushes or manual dispatches."
+            exit 1
+          fi
+
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "::error::Manual release builds must run from the main branch."
+            exit 1
+          fi
+
+          git fetch --force origin main:refs/remotes/origin/main
+          git fetch --force --tags origin
+          git checkout -B main refs/remotes/origin/main
+
+          input_version="${INPUT_VERSION:-}"
+          bump="${BUMP:-patch}"
+
+          if [ -n "${input_version}" ]; then
+            tag="${input_version}"
+            if [[ "${tag}" != v* ]]; then
+              tag="v${tag}"
+            fi
+            version="${tag#v}"
+          else
+            latest_tag="$(git tag -l 'v[0-9]*' --sort=-version:refname | head -n 1 || true)"
+            if [ -z "${latest_tag}" ]; then
+              version="0.1.0"
+            else
+              if [[ ! "${latest_tag}" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)([-+].*)?$ ]]; then
+                echo "::error::Latest release tag has unsupported format: ${latest_tag}"
+                exit 1
+              fi
+
+              major="${BASH_REMATCH[1]}"
+              minor="${BASH_REMATCH[2]}"
+              patch="${BASH_REMATCH[3]}"
+              case "${bump}" in
+                major)
+                  major=$((major + 1))
+                  minor=0
+                  patch=0
+                  ;;
+                minor)
+                  minor=$((minor + 1))
+                  patch=0
+                  ;;
+                patch)
+                  patch=$((patch + 1))
+                  ;;
+                *)
+                  echo "::error::Unsupported bump value: ${bump}"
+                  exit 1
+                  ;;
+              esac
+              version="${major}.${minor}.${patch}"
+            fi
+            tag="v${version}"
+          fi
+
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.\-]+)?$ ]]; then
+            echo "::error::Invalid release version: ${version}"
+            exit 1
+          fi
+
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "::error::${tag} already exists. Choose a different version."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "::error::${tag} already exists on origin. Choose a different version."
+            exit 1
+          fi
+
+          VERSION="${version}" node <<'NODE'
+          const fs = require("node:fs");
+          const version = process.env.VERSION;
+
+          function replaceVersion(path) {
+            const text = fs.readFileSync(path, "utf8");
+            JSON.parse(text);
+            const updated = text.replace(/("version"\s*:\s*")[^"]+(")/, `$1${version}$2`);
+            if (updated === text) {
+              throw new Error(`Could not replace version in ${path}`);
+            }
+            fs.writeFileSync(path, updated);
+          }
+
+          replaceVersion("apps/desktop/package.json");
+          replaceVersion("apps/desktop/src-tauri/tauri.conf.json");
+
+          const cargoPath = "Cargo.toml";
+          const cargoText = fs.readFileSync(cargoPath, "utf8");
+          const cargoUpdated = cargoText.replace(/(\[workspace\.package\][\s\S]*?^version\s*=\s*")[^"]+(")/m, `$1${version}$2`);
+          if (cargoUpdated === cargoText) {
+            throw new Error("Could not replace workspace.package version in Cargo.toml");
+          }
+          fs.writeFileSync(cargoPath, cargoUpdated);
+          NODE
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet -- apps/desktop/package.json apps/desktop/src-tauri/tauri.conf.json Cargo.toml; then
+            echo "Version files already set to ${version}; no release commit needed."
+          else
+            git add apps/desktop/package.json apps/desktop/src-tauri/tauri.conf.json Cargo.toml
+            git commit -m "chore: release ${tag} [skip ci]"
+            git push origin HEAD:main
+          fi
+
+          release_sha="$(git rev-parse HEAD)"
+          {
+            echo "version=${version}"
+            echo "tag=${tag}"
+            echo "release_sha=${release_sha}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "Prepared Skill Library ${tag} at ${release_sha}."
+
+  build-desktop:
+    name: ${{ matrix.name }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      CLIENT_ID: ${{ vars.CLIENT_ID }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS Intel
+            runner: macos-15-intel
+            os: macos
+            arch: x64
+            rustTarget: x86_64-apple-darwin
+          - name: macOS Apple Silicon
+            runner: macos-15
+            os: macos
+            arch: arm64
+            rustTarget: aarch64-apple-darwin
+          - name: Windows x64
+            runner: windows-2025
+            os: windows
+            arch: x64
+            rustTarget: x86_64-pc-windows-msvc
+          - name: Windows ARM64
+            runner: windows-11-arm
+            os: windows
+            arch: arm64
+            rustTarget: aarch64-pc-windows-msvc
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rustTarget }}
+
+      - name: Cache Rust build
+        id: rust-cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust-release
+          workspaces: ". -> target"
+          key: ${{ matrix.rustTarget }}
+          env-vars: "CLIENT_ID"
+          cache-workspace-crates: true
+          cache-on-failure: true
+
+      - name: Report Rust cache status
+        run: |
+          echo "Rust cache exact hit: ${{ steps.rust-cache.outputs.cache-hit }}"
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check GitHub OAuth client id
+        run: |
+          set -euo pipefail
+          if [ -z "${CLIENT_ID:-}" ]; then
+            echo "::error::Set CLIENT_ID in repository Settings > Secrets and variables > Actions > Variables before publishing release builds. Environment variables are only available to jobs that declare an environment."
+            exit 1
+          fi
+
+      - name: Build Tauri bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop
+          tauriScript: pnpm tauri
+          args: --target ${{ matrix.rustTarget }}
+          retryAttempts: 2
+
+      - name: Upload Tauri bundle workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: skill-library-${{ needs.prepare.outputs.tag }}-${{ matrix.os }}-${{ matrix.arch }}-bundle
+          path: |
+            target/${{ matrix.rustTarget }}/release/bundle/dmg/*.dmg
+            target/${{ matrix.rustTarget }}/release/bundle/nsis/*.exe
+            target/${{ matrix.rustTarget }}/release/bundle/msi/*.msi
+          if-no-files-found: error
+
+      - name: Package portable app (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          app_path="target/${{ matrix.rustTarget }}/release/bundle/macos/Skill Library.app"
+          mkdir -p portable
+          ditto -c -k --keepParent "$app_path" "portable/Skill-Library-${{ needs.prepare.outputs.tag }}-${{ matrix.os }}-${{ matrix.arch }}-portable.zip"
+
+      - name: Package portable app (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = "target/${{ matrix.rustTarget }}/release/skill-library-desktop.exe"
+          New-Item -ItemType Directory -Force -Path portable | Out-Null
+          Compress-Archive -Path $exe -DestinationPath "portable/Skill-Library-${{ needs.prepare.outputs.tag }}-${{ matrix.os }}-${{ matrix.arch }}-portable.zip" -Force
+
+      - name: Upload portable workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: skill-library-${{ needs.prepare.outputs.tag }}-${{ matrix.os }}-${{ matrix.arch }}-portable
+          path: portable/*.zip
+          if-no-files-found: error
+
+  publish-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - prepare
+      - build-desktop
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.release_sha }}
+
+      - name: Download workflow artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: skill-library-${{ needs.prepare.outputs.tag }}-*
+          path: release-artifacts
+          merge-multiple: false
+
+      - name: Create or verify version tag
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            tag_sha="$(git rev-list -n 1 "${TAG}")"
+            if [ "${tag_sha}" != "${RELEASE_SHA}" ]; then
+              echo "::error::${TAG} already points to ${tag_sha}, expected ${RELEASE_SHA}."
+              exit 1
+            fi
+            echo "${TAG} already exists and points to ${RELEASE_SHA}."
+          else
+            git tag "${TAG}" "${RELEASE_SHA}"
+            git push origin "refs/tags/${TAG}"
+          fi
+
+      - name: Prepare release assets and notes
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p release-assets
+          while IFS= read -r -d '' file; do
+            rel="${file#release-artifacts/}"
+            artifact_name="${rel%%/*}"
+            file_name="$(basename "$file")"
+            cp "$file" "release-assets/${artifact_name}-${file_name}"
+          done < <(find release-artifacts -type f -print0)
+
+          mapfile -d '' files < <(find release-assets -type f -print0 | sort -z)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::No build artifacts found for ${TAG}."
+            exit 1
+          fi
+
+          describe_platform() {
+            case "$1" in
+              *macos-x64*) echo "macOS Intel" ;;
+              *macos-arm64*) echo "macOS Apple Silicon" ;;
+              *windows-x64*) echo "Windows x64" ;;
+              *windows-arm64*) echo "Windows ARM64" ;;
+              *) echo "Desktop" ;;
+            esac
+          }
+
+          describe_file() {
+            case "$1" in
+              *.dmg) echo "DMG installer" ;;
+              *.msi) echo "MSI installer" ;;
+              *.exe) echo "NSIS installer" ;;
+              *portable*.zip) echo "Portable app zip" ;;
+              *.zip) echo "App archive" ;;
+              *) echo "Bundle artifact" ;;
+            esac
+          }
+
+          prev_tag="$(git tag -l 'v[0-9]*' --sort=-version:refname | grep -Fvx "${TAG}" | head -n 1 || true)"
+          if [ -n "${prev_tag}" ]; then
+            mapfile -t changelog < <(git log "${prev_tag}..${RELEASE_SHA}" --no-merges --pretty=format:'%s (%h)' | grep -Ev '^chore: release v[0-9]+\.[0-9]+\.[0-9]+' || true)
+          else
+            mapfile -t changelog < <(git log "${RELEASE_SHA}" --no-merges --pretty=format:'%s (%h)' | grep -Ev '^chore: release v[0-9]+\.[0-9]+\.[0-9]+' || true)
+          fi
+
+          {
+            echo "## Skill Library ${TAG}"
+            echo
+            echo "### Downloads"
+            echo
+            echo "| Platform | File | Description |"
+            echo "|----------|------|-------------|"
+            for file in "${files[@]}"; do
+              base="$(basename "$file")"
+              platform="$(describe_platform "$base")"
+              description="$(describe_file "$base")"
+              echo "| **${platform}** | \`${base}\` | ${description} |"
+            done
+            echo
+            echo "### System Requirements"
+            echo
+            echo "- **macOS**: macOS 11.0 (Big Sur) or later"
+            echo "- **Windows**: Windows 10 or later"
+            echo
+            echo "### Changelog"
+            echo
+            if [ -n "${prev_tag}" ]; then
+              echo "Changes since ${prev_tag}:"
+            else
+              echo "Initial release changes:"
+            fi
+            echo
+            if [ "${#changelog[@]}" -eq 0 ]; then
+              echo "- Version metadata updated for ${TAG}."
+            else
+              for entry in "${changelog[@]}"; do
+                echo "- ${entry}"
+              done
+            fi
+            echo
+          } > RELEASE_NOTES.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          mapfile -d '' files < <(find release-assets -type f -print0 | sort -z)
+          prerelease_args=()
+          if [[ "${TAG}" =~ (alpha|beta|rc) ]]; then
+            prerelease_args+=(--prerelease)
+          fi
+
+          gh release create "${TAG}" "${files[@]}" \
+            --target "${RELEASE_SHA}" \
+            --title "Skill Library ${TAG}" \
+            --notes-file RELEASE_NOTES.md \
+            "${prerelease_args[@]}"
+
+  cleanup-packages:
+    name: Cleanup old packages
+    runs-on: ubuntu-latest
+    needs:
+      - build-desktop
+      - publish-release
+    if: ${{ always() && needs.build-desktop.result == 'success' && needs.publish-release.result == 'success' }}
+    steps:
+      - name: Keep last three release versions and artifact runs
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const keepReleases = 3;
+            const keepWorkflowRuns = 3;
+            const artifactPrefix = "skill-library-";
+            const workflowFile = "release.yml";
+            const { owner, repo } = context.repo;
+
+            const releases = await github.paginate(github.rest.repos.listReleases, {
+              owner,
+              repo,
+              per_page: 100,
+            });
+            const versionReleases = releases
+              .filter((release) => /^v/.test(release.tag_name))
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+            for (const release of versionReleases.slice(keepReleases)) {
+              core.info(`Deleting old release assets by deleting release ${release.tag_name} (${release.id}); git tag is kept.`);
+              await github.rest.repos.deleteRelease({
+                owner,
+                repo,
+                release_id: release.id,
+              });
+            }
+
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              owner,
+              repo,
+              workflow_id: workflowFile,
+              status: "completed",
+              per_page: 100,
+            });
+            const successfulRuns = runs
+              .filter((run) => run.conclusion === "success")
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            const previousSuccessfulRuns = successfulRuns.filter((run) => run.id !== context.runId);
+            const keepRunIds = new Set(previousSuccessfulRuns.slice(0, keepWorkflowRuns - 1).map((run) => run.id));
+            keepRunIds.add(context.runId);
+
+            const artifacts = await github.paginate(github.rest.actions.listArtifactsForRepo, {
+              owner,
+              repo,
+              per_page: 100,
+            });
+
+            for (const artifact of artifacts) {
+              if (!artifact.name.startsWith(artifactPrefix)) continue;
+              const runId = artifact.workflow_run?.id;
+              if (!runId || keepRunIds.has(runId)) continue;
+              core.info(`Deleting old workflow artifact ${artifact.name} (${artifact.id}) from run ${runId}.`);
+              await github.rest.actions.deleteArtifact({
+                owner,
+                repo,
+                artifact_id: artifact.id,
+              });
+            }

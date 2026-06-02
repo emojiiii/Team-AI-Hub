@@ -124,7 +124,7 @@ rtk pnpm --filter @skill-library/desktop tauri build --debug
 
 ## Packaging and CI
 
-The desktop build workflow is `.github/workflows/desktop-build.yml`. It builds:
+CI checks live in `.github/workflows/ci.yml`. The release build workflow is `.github/workflows/release.yml`. It builds:
 
 - macOS Intel: `x86_64-apple-darwin` on `macos-15-intel`
 - macOS Apple Silicon: `aarch64-apple-darwin` on `macos-15`
@@ -136,20 +136,22 @@ Tauri bundle artifacts are uploaded by `tauri-apps/tauri-action`. Additional por
 - macOS portable: zipped `.app` bundle
 - Windows portable: zipped `skill-library-desktop.exe`
 
-Builds run on pushes to `main`, pull requests targeting `main`, and manual dispatches. Every artifact name includes the resolved app version.
+CI runs on pushes to `main` and pull requests targeting `main`. Release builds run on `v*` tags and manual dispatches from `main`. Every release artifact name includes the resolved app version tag.
 
-GitHub OAuth login is configured by `CLIENT_ID`. Keep `.env` local-only for development; GitHub release builds read `CLIENT_ID` from repository Variables and bake it into the desktop binary at compile time. Push-to-`main` release builds fail fast if `CLIENT_ID` is missing, so a release is not published with broken sign-in.
+GitHub OAuth login is configured by `CLIENT_ID`. Keep `.env` local-only for development; GitHub release builds read `CLIENT_ID` from repository Variables and bake it into the desktop binary at compile time. Release builds fail fast if `CLIENT_ID` is missing, so a release is not published with broken sign-in.
 
-Version source of truth is checked at workflow start. These files must agree before publishing:
+Version source of truth is checked at workflow start for tag-triggered releases. Manual release runs update these files automatically before building:
 
 - `apps/desktop/package.json`
 - `apps/desktop/src-tauri/tauri.conf.json`
 - `Cargo.toml` under `[workspace.package]`
 
-After a successful push-to-`main` build, the workflow creates a `v<version>` tag and a draft GitHub Release containing the installer and portable artifacts. If that tag already exists, the release job fails and the version must be bumped first. Pull requests and manual runs build artifacts only; they do not create tags or releases.
+Manual release runs can take an explicit `version` input, such as `v0.1.1`, or auto-bump the latest `v*` tag by `patch`, `minor`, or `major`. The workflow commits the synchronized version files to `main` with `[skip ci]`, builds from that commit, creates the matching `v<version>` tag, and publishes a GitHub Release containing the installer and portable artifacts. The release notes include a downloads table, system requirements, and a changelog generated from commits since the previous `v*` tag. Tag-triggered releases are still supported for re-publishing a version that already has synchronized version files.
+
+The workflow publishes GitHub Release assets only. It does not publish to GitHub Packages.
 
 The workflow has a cleanup job to control storage cost:
 
 - Keeps the latest three `v*` GitHub Releases and deletes older release records/assets while keeping the git tags.
-- Keeps artifacts from the current workflow run and the latest two previous successful desktop build runs.
+- Keeps artifacts from the current workflow run and the latest two previous successful release runs.
 - Deletes only artifacts with the `skill-library-` prefix.

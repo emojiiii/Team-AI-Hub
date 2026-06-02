@@ -23,7 +23,7 @@ import {
   setDiscussionMappingCache,
   clearDiscussionMappingCache,
 } from "../lib/workspaceCache";
-import { formatError } from "../utils/format";
+import { formatError, formatRelativeTime } from "../utils/format";
 
 // GitHub reaction content → emoji mapping
 const REACTION_EMOJI: Record<string, string> = {
@@ -38,20 +38,6 @@ const REACTION_EMOJI: Record<string, string> = {
 };
 
 const ALL_REACTIONS = Object.keys(REACTION_EMOJI);
-
-function timeAgo(dateStr: string): string {
-  const now = Date.now();
-  const then = new Date(dateStr).getTime();
-  const diff = now - then;
-  const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return new Date(dateStr).toLocaleDateString();
-}
 
 /** Emoji picker rendered via portal to avoid overflow clipping */
 function EmojiPickerPortal({
@@ -225,6 +211,7 @@ function DiscussionBody({
   isPending: boolean;
   onToggleReaction: (content: string, remove: boolean) => void;
 }) {
+  const { locale } = useLocale();
   const reactionMap = new Map<string, ReactionGroup>(
     (discussion.reactions ?? []).map((r) => [r.content, r]),
   );
@@ -250,7 +237,7 @@ function DiscussionBody({
           @{discussion.bodyAuthor}
         </span>
         <span className="text-[11px] text-[var(--fg-muted)]">
-          {timeAgo(discussion.createdAt)}
+          {formatRelativeTime(discussion.createdAt, locale)}
         </span>
       </div>
 
@@ -284,6 +271,7 @@ function CommentItem({
   isPending: boolean;
   onToggleReaction: (commentId: string, content: string, remove: boolean) => void;
 }) {
+  const { locale } = useLocale();
   const reactionMap = new Map<string, ReactionGroup>(
     (comment.reactions ?? []).map((r) => [r.content, r]),
   );
@@ -302,7 +290,7 @@ function CommentItem({
       <div className="comment-body">
         <div className="comment-header">
           <span className="comment-author">@{comment.author}</span>
-          <span className="comment-date">{timeAgo(comment.createdAt)}</span>
+          <span className="comment-date">{formatRelativeTime(comment.createdAt, locale)}</span>
         </div>
         <div className="comment-text">
           <MarkdownBody content={comment.body} />
@@ -505,7 +493,7 @@ export function SkillComments({
   const queryClient = useQueryClient();
   const { t } = useLocale();
 
-  // Cached discussions enabled status — avoids flash of "未开启" on first load
+  // Cached discussions enabled status avoids a first-load disabled-state flash.
   const [cachedEnabled, setCachedEnabled] = useState<boolean | null>(null);
   const [cachedForKey, setCachedForKey] = useState(`${workspace}:${skillId}`);
 

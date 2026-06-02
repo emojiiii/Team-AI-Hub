@@ -39,7 +39,7 @@ export const openExternalUrl = async (url: string) => {
 };
 
 export function shortHash(value?: string | null): string {
-  if (!value) return "no hash";
+  if (!value) return "-";
   return value.startsWith("sha256:") ? `${value.slice(0, 19)}...` : value.slice(0, 16);
 }
 
@@ -52,7 +52,7 @@ export function formatInstalls(value: number): string {
 }
 
 export function formatDateTime(value?: string | null): string {
-  if (!value) return "unknown";
+  if (!value) return "-";
   return new Intl.DateTimeFormat(undefined, {
     month: "short",
     day: "numeric",
@@ -61,17 +61,26 @@ export function formatDateTime(value?: string | null): string {
   }).format(new Date(value));
 }
 
-export function formatRelativeTime(value?: string | null): string {
-  if (!value) return "unknown";
+function intlLocale(locale?: string): string | undefined {
+  if (locale === "zh") return "zh-CN";
+  if (locale === "en") return "en";
+  return undefined;
+}
+
+export function formatRelativeTime(value?: string | null, locale?: string): string {
+  if (!value) return "-";
   const target = new Date(value).getTime();
-  if (Number.isNaN(target)) return "unknown";
+  if (Number.isNaN(target)) return "-";
   const diff = Date.now() - target;
-  const minutes = Math.round(diff / 60000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
+  const rtf = new Intl.RelativeTimeFormat(intlLocale(locale), {
+    numeric: "auto",
+    style: "narrow",
+  });
+  const minutes = Math.max(0, Math.round(diff / 60000));
+  if (minutes < 60) return rtf.format(-minutes, "minute");
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return rtf.format(-hours, "hour");
   const days = Math.round(hours / 24);
-  if (days < 7) return `${days}d ago`;
+  if (days < 7) return rtf.format(-days, "day");
   return formatDateTime(value);
 }

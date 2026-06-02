@@ -84,10 +84,6 @@ pub fn install(options: InstallOptions) -> Result<InstallReport> {
     let mut installed = Vec::new();
     let mut skipped = Vec::new();
     for target in requested {
-        if !manifest.targets.contains(&target) {
-            skipped.push(format!("{target}: not declared by manifest"));
-            continue;
-        }
         let root = match target_roots.resolve(&target) {
             Some(root) => root,
             None => {
@@ -299,7 +295,7 @@ impl TargetRoots {
         match RuntimeTarget::from_id(target) {
             RuntimeTarget::ClaudeCode => Some(home.join(".claude").join("skills")),
             RuntimeTarget::Cursor => Some(home.join(".cursor").join("skills")),
-            RuntimeTarget::Codex => Some(home.join(".codex").join("skills")),
+            RuntimeTarget::Codex => Some(home.join(".agents").join("skills")),
             RuntimeTarget::Custom(_) => None,
         }
     }
@@ -395,6 +391,15 @@ targets:
             !target.path().join("code-reviewer").exists(),
             "no skill dir should be created in any target root"
         );
+    }
+
+    #[test]
+    fn codex_resolves_to_shared_agents_skills_root() {
+        let root = TargetRoots::new(Vec::new())
+            .resolve("codex")
+            .expect("codex should resolve to a default install root");
+
+        assert!(root.ends_with(Path::new(".agents").join("skills")));
     }
 
     #[test]

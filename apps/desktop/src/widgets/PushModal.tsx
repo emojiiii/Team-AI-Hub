@@ -3,7 +3,6 @@ import { Check, ChevronsUpDown, GitPullRequestArrow, ShieldAlert } from "lucide-
 import { useEffect, useRef, useState } from "react";
 import type { LocalAgentEntry, PublishPreview, StoredWorkspace } from "../lib/teamai";
 import { Pill, type PillTone } from "../widgets/Pill";
-import { riskLabel } from "../utils/risk";
 import { workspaceColor, workspaceInitials } from "../utils/workspace-visual";
 import { useLocale } from "../hooks/useLocale";
 
@@ -90,7 +89,7 @@ export function PushModal({
           <Modal.Dialog className="rounded-[12px] bg-[var(--bg-elevated)] outline-none">
             <Modal.Header className="border-b border-[var(--line)] px-5 py-4">
               <Modal.Heading className="text-[15px] font-semibold tracking-tight">
-                Push &ldquo;{entry.name}&rdquo; to a workspace
+                {t("push.title").replace("{name}", entry.name)}
               </Modal.Heading>
               <div className="mt-1 truncate text-[12px] font-mono text-[var(--fg-muted)]">{entry.path}</div>
             </Modal.Header>
@@ -98,7 +97,7 @@ export function PushModal({
             <Modal.Body className="space-y-5 px-5 py-4">
               <section>
                 <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--fg-muted)]">
-                  Target workspace
+                  {t("push.targetWorkspace")}
                 </div>
                 {workspaces.length ? (
                   <div ref={dropdownRef} className="relative">
@@ -114,7 +113,7 @@ export function PushModal({
                         {selectedInitials}
                       </span>
                       <span className="min-w-0 flex-1">
-                        <div className="truncate text-[13px] font-medium">{target || "Select workspace"}</div>
+                        <div className="truncate text-[13px] font-medium">{target || t("common.selectWorkspace")}</div>
                         {selectedWs && (
                           <div className="text-[11px] text-[var(--fg-muted)]">
                             {selectedWs.permission} &middot; {selectedWs.visibility}
@@ -159,7 +158,7 @@ export function PushModal({
                               </span>
                               {active && <Check size={13} className="shrink-0 text-[var(--brand)]" />}
                               {!["admin", "maintain", "write"].includes(ws.permission) && (
-                                <Pill tone="warning">read-only</Pill>
+                                <Pill tone="warning">{t("common.readOnly")}</Pill>
                               )}
                             </button>
                           );
@@ -169,7 +168,7 @@ export function PushModal({
                   </div>
                 ) : (
                   <div className="rounded-md border border-dashed border-[var(--line)] px-3 py-6 text-center text-[12px] text-[var(--fg-muted)]">
-                    Add a workspace before publishing.
+                    {t("push.addWorkspaceFirst")}
                   </div>
                 )}
               </section>
@@ -177,18 +176,20 @@ export function PushModal({
               {/* Risk preview */}
               <section>
                 <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--fg-muted)]">
-                  Risk &amp; policy preview
+                  {t("push.riskPolicyPreview")}
                 </div>
                 {previewPending && !displayPreview ? (
                   <div className="rounded-md border border-[var(--line)] px-3 py-3 text-[12.5px] text-[var(--fg-muted)]">
-                    Generating preview...
+                    {t("push.generatingPreview")}
                   </div>
                 ) : displayPreview && policy ? (
                   <div className={`rounded-md border border-[var(--line)] bg-[var(--bg-soft)] transition-opacity ${previewPending ? "opacity-50" : ""}`}>
                     <div className="flex items-center justify-between gap-3 border-b border-[var(--line)] px-3 py-2">
                       <div className="flex items-center gap-2">
                         <ShieldAlert size={14} className="text-[var(--warning)]" />
-                        <span className="text-[12.5px] font-medium">{riskLabel[policy.risk_level]} risk</span>
+                        <span className="text-[12.5px] font-medium">
+                          {t("sync.riskLabel").replace("{risk}", t(`risk.level.${policy.risk_level}`))}
+                        </span>
                       </div>
                       <Pill tone={decisionTone[policy.decision] ?? "default"}>
                         {policy.decision.replaceAll("_", " ")}
@@ -196,22 +197,22 @@ export function PushModal({
                     </div>
                     <div className="grid grid-cols-2 gap-3 px-3 py-3 text-[12px]">
                       <div>
-                        <div className="text-[10.5px] uppercase tracking-wider text-[var(--fg-muted)]">Files</div>
+                        <div className="text-[10.5px] uppercase tracking-wider text-[var(--fg-muted)]">{t("common.files")}</div>
                         <div className="mt-0.5 font-medium">{displayPreview.package.file_count}</div>
                       </div>
                       <div>
-                        <div className="text-[10.5px] uppercase tracking-wider text-[var(--fg-muted)]">Size</div>
+                        <div className="text-[10.5px] uppercase tracking-wider text-[var(--fg-muted)]">{t("common.size")}</div>
                         <div className="mt-0.5 font-medium">
                           {(displayPreview.package.total_bytes / 1024).toFixed(1)} KB
                         </div>
                       </div>
                       <div className="col-span-2">
-                        <div className="text-[10.5px] uppercase tracking-wider text-[var(--fg-muted)]">Hash</div>
+                        <div className="text-[10.5px] uppercase tracking-wider text-[var(--fg-muted)]">{t("common.hash")}</div>
                         <div className="mt-0.5 truncate font-mono text-[11px]">{displayPreview.package.source_hash}</div>
                       </div>
                       {policy.reasons.length ? (
                         <div className="col-span-2">
-                          <div className="text-[10.5px] uppercase tracking-wider text-[var(--fg-muted)]">Reasons</div>
+                          <div className="text-[10.5px] uppercase tracking-wider text-[var(--fg-muted)]">{t("common.reasons")}</div>
                           <ul className="mt-1 list-disc pl-4 text-[11.5px] text-[var(--fg-secondary)]">
                             {policy.reasons.map((reason) => (
                               <li key={reason}>{reason}</li>
@@ -222,17 +223,17 @@ export function PushModal({
                     </div>
                     {displayPreview.request ? (
                       <div className="border-t border-[var(--line)] px-3 py-2.5">
-                        <div className="text-[10.5px] uppercase tracking-wider text-[var(--fg-muted)]">PR draft</div>
+                        <div className="text-[10.5px] uppercase tracking-wider text-[var(--fg-muted)]">{t("common.prDraft")}</div>
                         <div className="mt-0.5 truncate text-[12.5px] font-medium">{displayPreview.request.title}</div>
                         <div className="truncate text-[11.5px] font-mono text-[var(--fg-muted)]">
-                          branch: {displayPreview.request.branch_name}
+                          {t("common.branch")}: {displayPreview.request.branch_name}
                         </div>
                       </div>
                     ) : null}
                   </div>
                 ) : (
                   <div className="rounded-md border border-dashed border-[var(--line)] px-3 py-4 text-center text-[12px] text-[var(--fg-muted)]">
-                    Preview will appear once a workspace is selected.
+                    {t("push.previewEmpty")}
                   </div>
                 )}
               </section>
@@ -240,7 +241,7 @@ export function PushModal({
 
             <div className="flex justify-end gap-2 border-t border-[var(--line)] px-5 py-3">
               <Button variant="outline" onPress={() => onOpenChange(false)}>
-                Cancel
+                {t("common.cancel")}
               </Button>
               <Button
                 onPress={onConfirm}
@@ -248,7 +249,7 @@ export function PushModal({
                 isDisabled={!target || !preview || previewPending}
               >
                 <GitPullRequestArrow size={14} />
-                Open PR
+                {t("push.openPr")}
               </Button>
             </div>
           </Modal.Dialog>

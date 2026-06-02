@@ -1,17 +1,21 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Spinner } from "@heroui/react";
+import { Spinner, toast } from "@heroui/react";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSyncPoller } from "../hooks/useSyncPoller";
 import { useWindowFocus } from "../hooks/useWindowFocus";
 import { useLocalStorage } from "../hooks/useLocalStorage";
+import { useLocale } from "../hooks/useLocale";
 import { getSkillsListCache, setSkillsListCache, getSkillDetailFromCache, putSkillDetailInCache, clearSkillDetail, getReviewCache, getReviewCaches, putReviewCache } from "../lib/workspaceCache";
 import {
+  dbCheckModifications,
+  dbListSkills,
   getSkillDetail,
   getRemoteReviewsBatch,
   getWorkspaceDetail,
   installSkill,
   onScanProgress,
-  previewPublish,
+  publishWorkspaceSkillUpdate,
+  readSubscriptions,
   scanGithubWorkspaceStreaming,
   scanWorkspace,
   type SkillAsset,
@@ -23,10 +27,13 @@ import {
 import { normalizeRemoteReview, reviewVerdictMapKey, type ReviewVerdictMap } from "../lib/review";
 import { WorkspacesPage } from "../pages/WorkspacesPage";
 import { PublishModal } from "../widgets/PublishModal";
+import type { SkillPublishDraft } from "../widgets/SkillDetail";
+import { InstallToToolsDialog, type InstallTargetSelection } from "../widgets/InstallToToolsDialog";
 import { SubscribeModal, type Channel, type UpdatePolicy } from "../widgets/SubscribeModal";
 import { SyncSkillModal } from "../widgets/SyncSkillModal";
 import { useWorkspace } from "../context/WorkspaceContext";
 import { useAppStore } from "../state/appStore";
+import { formatError, openExternalUrl } from "../utils/format";
 
 // Lazy-loaded: SkillDetail pulls in the heavy editor stack (MDXEditor/ProseMirror
 // + CodeMirror with 10 language packs, ~2MB). Keeping it out of the startup
@@ -36,6 +43,9 @@ const SkillDetail = lazy(() => import("../widgets/SkillDetail").then((m) => ({ d
 
 type ScanRequest = { kind: "local" | "github"; value: string };
 
+const publishRoles = new Set(["admin", "maintain", "write"]);
+const EMPTY_ASSETS: SkillAsset[] = [];
+
 function resolveSelectedSource(workspace: string, selected: SkillAsset | null) {
   if (!selected || workspace === "demo") return "demo";
   return `${workspace.replace(/\/$/, "")}/${selected.path}`;
@@ -43,6 +53,7 @@ function resolveSelectedSource(workspace: string, selected: SkillAsset | null) {
 
 export function WorkspaceSkillsRoute() {
   const { workspace, workspaceMeta, authLogin } = useWorkspace();
+  const { t } = useLocale();
   const queryClient = useQueryClient();
   const windowFocused = useWindowFocus();
   const targets = useAppStore((s) => s.targets);
@@ -53,7 +64,7 @@ export function WorkspaceSkillsRoute() {
   const [persistedFile, setPersistedFile] = useLocalStorage<string | null>(`ws-ui:${workspace}:file`, null);
 
   const workspaces = useQuery({ queryKey: ["workspaces"], queryFn: listWorkspaces, staleTime: 2 * 60 * 1000 });
-  const subscriptions = useQuery({ queryKey: ["subscriptions"], queryFn: () => import("../lib/teamai").then((m) => m.readSubscriptions()), staleTime: 60 * 1000 });
+  const subscriptions = useQuery({ queryKey: ["subscriptions"], queryFn: readSubscriptions, staleTime: 60 * 1000 });
 
   // --- Local state ---
   const [selected, setSelectedRaw] = useState<SkillAsset | null>(null);
@@ -61,15 +72,31 @@ export function WorkspaceSkillsRoute() {
   const [selectedFile, setSelectedFileRaw] = useState<string | null>(persistedFile);
   const [query, setQuery] = useState("");
   const [detailOpen, setDetailOpen] = useState(false);
+  const [installOpen, setInstallOpen] = useState(false);
   const [subscribeOpen, setSubscribeOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
+  const [publishDraft, setPublishDraft] = useState<SkillPublishDraft | null>(null);
+  const [publishReset, setPublishReset] = useState<{ key: number; value: string | null }>({ key: 0, value: null });
+  const publishToastRef = useRef<string | null>(null);
   const [demoWorkspaceDetail, setDemoWorkspaceDetail] = useState<WorkspaceDetail | null>(null);
   const [cachedSkills, setCachedSkills] = useState<{ workspace: string; skills: SkillAsset[] }>({ workspace: "", skills: [] });
   const [streamingSkills, setStreamingSkills] = useState<SkillAsset[]>([]);
   const prevAssetsRef = useRef<SkillAsset[]>([]);
-  const initialLoadDone = useRef(false);
+  const activeWorkspaceRef = useRef(workspace);
   const unlistenRef = useRef<(() => void) | null>(null);
+
+  activeWorkspaceRef.current = workspace;
+
+  const localManagedSkills = useQuery({
+    queryKey: ["db-skills", "workspace-detail", workspace, selected?.manifest.id],
+    queryFn: async () => {
+      await dbCheckModifications();
+      return dbListSkills();
+    },
+    enabled: Boolean(detailOpen && workspaceMeta && selected),
+    staleTime: 15 * 1000,
+  });
 
   // Simple setters that also persist
   const setSelected = (asset: SkillAsset | null) => {
@@ -120,7 +147,9 @@ export function WorkspaceSkillsRoute() {
         }
       }
     },
-    onSuccess: (result) => {
+    onSuccess: (result, request) => {
+      const wsName = result.workspace?.full_name ?? request.value;
+      if (wsName !== activeWorkspaceRef.current) return;
       setStreamingSkills([]); // Clear streaming state, final result is authoritative
       setDemoWorkspaceDetail(result.workspace ? null : result.detail);
       // Restore persisted skill or fall back to first
@@ -133,7 +162,6 @@ export function WorkspaceSkillsRoute() {
         setSelected(result.skills[0] ?? null);
       }
       setSelectedRef(undefined);
-      const wsName = result.workspace?.full_name ?? workspace;
       if (wsName) {
         queryClient.setQueryData(["workspace-scan", wsName], result);
         void setSkillsListCache(wsName, result.skills);
@@ -151,37 +179,51 @@ export function WorkspaceSkillsRoute() {
     };
   }, []);
 
-  // --- Initial load ---
-  if (!initialLoadDone.current) {
-    initialLoadDone.current = true;
+  // --- Initial load / workspace switch ---
+  useEffect(() => {
+    if (!workspace) return;
+    let cancelled = false;
+
+    setSelectedRaw(null);
+    setSelectedRef(undefined);
+    setSelectedFileRaw(persistedFile);
+    setDetailOpen(false);
+    setPublishDraft(null);
+    setPublishOpen(false);
+    setStreamingSkills([]);
+    setDemoWorkspaceDetail(null);
+    prevAssetsRef.current = [];
+
     const cachedScan = queryClient.getQueryData<{ workspace: Workspace | null; skills: SkillAsset[]; detail: WorkspaceDetail | null }>(
       ["workspace-scan", workspace]
     );
     if (cachedScan) {
       prevAssetsRef.current = cachedScan.skills;
-      if (!selected && cachedScan.skills.length > 0) {
-        const restored = persistedSkillId
-          ? cachedScan.skills.find((s) => s.manifest.id === persistedSkillId)
-          : null;
-        queueMicrotask(() => setSelectedRaw(restored ?? cachedScan.skills[0] ?? null));
-      }
+      const restored = persistedSkillId
+        ? cachedScan.skills.find((s) => s.manifest.id === persistedSkillId)
+        : null;
+      setSelectedRaw(restored ?? cachedScan.skills[0] ?? null);
     } else {
       void getSkillsListCache(workspace).then((cached) => {
-        if (cached && cached.length > 0) {
-          const skills = cached as SkillAsset[];
-          setCachedSkills({ workspace, skills });
-          setSelectedRaw((prev) => {
-            if (prev) return prev;
-            const restored = persistedSkillId
-              ? skills.find((s) => s.manifest.id === persistedSkillId)
-              : null;
-            return restored ?? skills[0] ?? null;
-          });
-        }
+        if (cancelled || !cached || cached.length === 0) return;
+        const skills = cached as SkillAsset[];
+        setCachedSkills({ workspace, skills });
+        const restored = persistedSkillId
+          ? skills.find((s) => s.manifest.id === persistedSkillId)
+          : null;
+        setSelectedRaw(restored ?? skills[0] ?? null);
       });
     }
+
     scan.mutate({ kind: "github", value: workspace });
-  }
+
+    return () => {
+      cancelled = true;
+    };
+    // Intentionally tied to workspace only. Persisted selection is read once for
+    // the new workspace; later selection writes should not restart scanning.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspace, queryClient]);
 
   // --- Skill detail ---
   const skillDetail = useQuery({
@@ -217,6 +259,15 @@ export function WorkspaceSkillsRoute() {
 
   const selectedDetail = workspaceMeta ? skillDetail : demoSkillDetail;
   const workspaceDetail = workspaceMeta ? scan.data?.detail ?? null : demoWorkspaceDetail;
+  const selectedLocalSkill = useMemo(() => {
+    if (!selected) return null;
+    return (
+      (localManagedSkills.data ?? []).find((skill) => {
+        if (skill.sourceWorkspace !== workspace) return false;
+        return skill.sourcePath === selected.path || skill.id === selected.manifest.id;
+      }) ?? null
+    );
+  }, [localManagedSkills.data, selected, workspace]);
 
   // --- Mutations ---
   const subscribe = useMutation({
@@ -233,26 +284,110 @@ export function WorkspaceSkillsRoute() {
     },
   });
 
-  const install = useMutation<Awaited<ReturnType<typeof installSkill>>, Error, boolean | undefined>({
-    mutationFn: (confirmed = false) =>
-      installSkill(resolveSelectedSource(workspace, selected), targets, confirmed),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["local-agents"] }),
+  const install = useMutation<
+    Awaited<ReturnType<typeof installSkill>>,
+    Error,
+    { selection?: InstallTargetSelection; confirmed?: boolean } | undefined
+  >({
+    mutationFn: (input) =>
+      installSkill(
+        resolveSelectedSource(workspace, selected),
+        input?.selection?.targets ?? targets,
+        input?.confirmed ?? false,
+        input?.selection?.projectTargets,
+      ),
+    onSuccess: () => {
+      setInstallOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["local-agents"] });
+    },
   });
 
   const publish = useMutation({
-    mutationFn: () =>
-      previewPublish({ source: resolveSelectedSource(workspace, selected), workspace, user: "local" }),
+    onMutate: () => {
+      if (publishToastRef.current) {
+        toast.close(publishToastRef.current);
+      }
+      publishToastRef.current = toast(t("publish.toastLoading"), {
+        description: t("publish.toastLoading.desc"),
+        isLoading: true,
+        timeout: 0,
+      });
+    },
+    mutationFn: (input: { bump: "patch" | "minor" | "major"; message: string }) =>
+      publishWorkspaceSkillUpdate({
+        workspace,
+        skillPath: selected?.path ?? "",
+        sourceRef: selectedRef,
+        versionBump: input.bump,
+        message: input.message,
+        draft: publishDraft
+          ? {
+              filePath: publishDraft.filePath,
+              after: publishDraft.after,
+            }
+          : null,
+        user: authLogin ?? "local",
+        confirmedRisk: true,
+      }),
+    onSuccess: (result) => {
+      if (publishToastRef.current) {
+        toast.close(publishToastRef.current);
+        publishToastRef.current = null;
+      }
+      setPublishOpen(false);
+      const publishedDraft = publishDraft;
+      setPublishDraft(null);
+      setPublishReset((current) => ({ key: current.key + 1, value: publishedDraft?.after ?? null }));
+      if (result.autoMerge?.merged) {
+        const mergedKey = result.autoMerge.deletedBranch
+          ? "publish.toastAutoMergedDeletedBranch"
+          : "publish.toastAutoMerged";
+        toast.success(
+          t(mergedKey)
+            .replace("{title}", result.pullRequest.title)
+            .replace("{number}", String(result.pullRequest.number)),
+        );
+      } else {
+        if (result.autoMerge?.error) {
+          toast.warning(t("publish.toastAutoMergeFailed").replace("{error}", result.autoMerge.error));
+        } else {
+          toast.success(
+            t("publish.toastCreated")
+              .replace("{title}", result.pullRequest.title)
+              .replace("{number}", String(result.pullRequest.number)),
+          );
+        }
+        void openExternalUrl(result.pullRequest.htmlUrl);
+      }
+      void scan.mutate({ kind: "github", value: workspace });
+      queryClient.invalidateQueries({ queryKey: ["workspace-scan", workspace] });
+      queryClient.invalidateQueries({ queryKey: ["skill-detail", workspace, selected?.path, selectedRef] });
+      queryClient.invalidateQueries({ queryKey: ["skill-file-content", workspace] });
+      queryClient.invalidateQueries({ queryKey: ["db-skills", "workspace-detail", workspace, selected?.manifest.id] });
+    },
+    onError: (err) => {
+      if (publishToastRef.current) {
+        toast.close(publishToastRef.current);
+        publishToastRef.current = null;
+      }
+      toast.danger(formatError(err));
+    },
   });
 
+  useEffect(() => {
+    setPublishDraft(null);
+  }, [selected?.manifest.id, selectedRef, selectedFile]);
+
   // --- Derived: assets with filter ---
-  const currentAssets = scan.data?.skills ?? [];
+  const scanDataWorkspace = scan.data?.workspace?.full_name ?? (scan.data && workspace === "demo" ? "demo" : "");
+  const currentAssets = scanDataWorkspace === workspace ? scan.data?.skills ?? EMPTY_ASSETS : EMPTY_ASSETS;
   if (currentAssets.length > 0) prevAssetsRef.current = currentAssets;
   // During streaming, show incrementally discovered skills; once scan completes, use final result
   const assets = currentAssets.length > 0
     ? currentAssets
     : streamingSkills.length > 0
       ? streamingSkills
-      : (prevAssetsRef.current.length > 0 ? prevAssetsRef.current : (cachedSkills.workspace === workspace ? cachedSkills.skills : []));
+      : (prevAssetsRef.current.length > 0 ? prevAssetsRef.current : (cachedSkills.workspace === workspace ? cachedSkills.skills : EMPTY_ASSETS));
 
   const filteredAssets = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -361,6 +496,7 @@ export function WorkspaceSkillsRoute() {
     retry: false,
   });
   const reviewVerdicts = verdictMapQuery.data ?? {};
+  const canPublishToWorkspace = Boolean(workspaceMeta && publishRoles.has(workspaceMeta.permission));
 
   return (
     <>
@@ -410,13 +546,21 @@ export function WorkspaceSkillsRoute() {
               selectedRef={selectedRef}
               setSelectedRef={setSelectedRef}
               selectedFile={selectedFile}
+              onSelectFile={setSelectedFile}
               targets={targets}
               setTargets={setTargets}
               workspaceRef={workspace}
               onSubscribeClick={() => setSubscribeOpen(true)}
-              onInstall={(confirmed = false) => install.mutate(confirmed)}
-              onPublish={() => publish.mutate()}
-              onPublishClick={workspaceMeta ? () => setPublishOpen(true) : undefined}
+              onInstall={(confirmed = false) => install.mutate({ confirmed })}
+              onInstallClick={() => setInstallOpen(true)}
+              onPublish={() => {
+                if (canPublishToWorkspace) setPublishOpen(true);
+              }}
+              onPublishClick={canPublishToWorkspace ? () => setPublishOpen(true) : undefined}
+              onPublishDraftChange={setPublishDraft}
+              canEditSource={canPublishToWorkspace}
+              publishResetKey={publishReset.key}
+              publishResetValue={publishReset.value}
               onSyncClick={workspaceMeta ? () => setSyncOpen(true) : undefined}
               onRefresh={() => {
                 // Drop the persistent detail cache so the refetch hits the network.
@@ -427,6 +571,7 @@ export function WorkspaceSkillsRoute() {
               }}
               installPending={install.isPending}
               publishPending={publish.isPending}
+              hasLocalChanges={selectedLocalSkill?.isModified ?? false}
               installResult={install.data}
               publishResult={publish.data}
               subscriptions={subscriptions.data?.subscriptions.length ?? 0}
@@ -434,6 +579,20 @@ export function WorkspaceSkillsRoute() {
             </Suspense>
           ) : null
         }
+      />
+
+      <InstallToToolsDialog
+        open={installOpen}
+        onOpenChange={setInstallOpen}
+        manifest={selected?.manifest ?? null}
+        loading={false}
+        sourceLabel={workspace}
+        defaultTargets={targets}
+        pending={install.isPending}
+        onConfirm={(selection) => {
+          if (!selection.projectTargets.length) setTargets(selection.targets);
+          install.mutate({ selection, confirmed: true });
+        }}
       />
 
       <SubscribeModal
@@ -467,9 +626,10 @@ export function WorkspaceSkillsRoute() {
         workspace={workspace}
         versions={workspaceDetail?.versions ?? []}
         selectedRef={selectedRef}
+        localDraft={publishDraft}
+        hasLocalChanges={selectedLocalSkill?.isModified ?? false}
         onPublish={({ bump, message }) => {
-          publish.mutate();
-          setPublishOpen(false);
+          publish.mutate({ bump, message });
         }}
         publishPending={publish.isPending}
       />

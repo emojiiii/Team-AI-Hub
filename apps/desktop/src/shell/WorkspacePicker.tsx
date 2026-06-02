@@ -95,7 +95,7 @@ export function WorkspacePicker({
                   autoFocus
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Find workspace..."
+                  placeholder={t("picker.searchPlaceholder")}
                   className="workspace-popover__search-input"
                 />
               </div>

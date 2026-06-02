@@ -462,10 +462,7 @@ fn normalize_manifest_value(value: &mut Value) {
     // overwrite this with the directory name when more accurate.
     if !obj.contains_key("id") {
         if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
-            obj.insert(
-                "id".to_owned(),
-                Value::String(slugify_for_id(name)),
-            );
+            obj.insert("id".to_owned(), Value::String(slugify_for_id(name)));
         }
     }
 }
@@ -530,12 +527,6 @@ fn warnings_for_manifest(manifest: &SkillManifest) -> Vec<ManifestIssue> {
         warnings.push(ManifestIssue::new(
             "version",
             "should be SemVer without a leading v",
-        ));
-    }
-    if manifest.targets.is_empty() {
-        warnings.push(ManifestIssue::new(
-            "targets",
-            "no runtime targets declared; skill won't auto-install anywhere",
         ));
     }
     if manifest.name.trim().len() < 2 {

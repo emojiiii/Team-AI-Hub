@@ -217,7 +217,9 @@ pub async fn scan_skill_assets_at(
             continue;
         }
         // Skip files inside well-known non-skill directories
-        if SKIP_PREFIXES.iter().any(|prefix| entry.path.starts_with(prefix) || entry.path.contains(&format!("/{prefix}"))) {
+        if SKIP_PREFIXES.iter().any(|prefix| {
+            entry.path.starts_with(prefix) || entry.path.contains(&format!("/{prefix}"))
+        }) {
             continue;
         }
         let (skill_dir, filename) = match entry.path.rsplit_once('/') {
@@ -284,15 +286,13 @@ pub async fn scan_skill_assets_at(
         };
 
         let result = match kind {
-            ManifestKind::Json => {
-                serde_json::from_str::<teamai_manifest::SkillManifest>(&text)
-                    .map(|manifest| SkillAsset {
-                        path: skill_path_buf(&skill_dir),
-                        manifest,
-                        warnings: Vec::new(),
-                    })
-                    .map_err(|err| err.to_string())
-            }
+            ManifestKind::Json => serde_json::from_str::<teamai_manifest::SkillManifest>(&text)
+                .map(|manifest| SkillAsset {
+                    path: skill_path_buf(&skill_dir),
+                    manifest,
+                    warnings: Vec::new(),
+                })
+                .map_err(|err| err.to_string()),
             ManifestKind::Yaml | ManifestKind::Yml => {
                 serde_yaml::from_str::<teamai_manifest::SkillManifest>(&text)
                     .map(|manifest| SkillAsset {
@@ -302,7 +302,9 @@ pub async fn scan_skill_assets_at(
                     })
                     .map_err(|err| err.to_string())
             }
-            ManifestKind::SkillMd => parse_skill_md_text(&text, &skill_dir).map_err(|err| err.to_string()),
+            ManifestKind::SkillMd => {
+                parse_skill_md_text(&text, &skill_dir).map_err(|err| err.to_string())
+            }
         };
 
         match result {
@@ -413,15 +415,13 @@ pub async fn scan_skill_assets_streaming(
                 continue;
             };
             let result = match kind {
-                ManifestKind::Json => {
-                    serde_json::from_str::<teamai_manifest::SkillManifest>(&text)
-                        .map(|manifest| SkillAsset {
-                            path: skill_path_buf(skill_dir),
-                            manifest,
-                            warnings: Vec::new(),
-                        })
-                        .map_err(|err| err.to_string())
-                }
+                ManifestKind::Json => serde_json::from_str::<teamai_manifest::SkillManifest>(&text)
+                    .map(|manifest| SkillAsset {
+                        path: skill_path_buf(skill_dir),
+                        manifest,
+                        warnings: Vec::new(),
+                    })
+                    .map_err(|err| err.to_string()),
                 ManifestKind::Yaml | ManifestKind::Yml => {
                     serde_yaml::from_str::<teamai_manifest::SkillManifest>(&text)
                         .map(|manifest| SkillAsset {
@@ -664,10 +664,22 @@ mod tests {
 
     #[test]
     fn normalize_asset_path_strips_prefixes_and_root() {
-        assert_eq!(normalize_asset_path("skills/find-skills"), "skills/find-skills");
-        assert_eq!(normalize_asset_path("./skills/find-skills"), "skills/find-skills");
-        assert_eq!(normalize_asset_path("/skills/find-skills/"), "skills/find-skills");
-        assert_eq!(normalize_asset_path("skills\\find-skills"), "skills/find-skills");
+        assert_eq!(
+            normalize_asset_path("skills/find-skills"),
+            "skills/find-skills"
+        );
+        assert_eq!(
+            normalize_asset_path("./skills/find-skills"),
+            "skills/find-skills"
+        );
+        assert_eq!(
+            normalize_asset_path("/skills/find-skills/"),
+            "skills/find-skills"
+        );
+        assert_eq!(
+            normalize_asset_path("skills\\find-skills"),
+            "skills/find-skills"
+        );
         assert_eq!(normalize_asset_path("."), "");
     }
 
@@ -678,7 +690,10 @@ mod tests {
     fn match_skill_dir_resolves_bare_id_to_nested_dir() {
         let dirs = vec![
             ("skills/find-skills".to_owned(), "find-skills".to_owned()),
-            ("skills/frontend-design".to_owned(), "frontend-design".to_owned()),
+            (
+                "skills/frontend-design".to_owned(),
+                "frontend-design".to_owned(),
+            ),
         ];
         assert_eq!(
             match_skill_dir(&dirs, "find-skills"),

@@ -1,11 +1,13 @@
 mod ai_review;
+mod app_icons;
 mod db;
 
 use base64::Engine as _;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
@@ -19,8 +21,8 @@ use teamai_provider::{
 };
 use teamai_provider_github::{
     scan::{SkillDetailScan, WorkspaceDetailScan},
-    CommitSummary, GitHubProvider, GitHubPublishFile, GitHubPublishInput, PullRequestQueryState,
-    PullRequestSummary, RepositoryEvent, RepositoryInvitation,
+    CommitSummary, GitHubProvider, GitHubPublishFile, GitHubPublishInput, IssueComment,
+    PullRequestQueryState, PullRequestSummary, RepositoryEvent, RepositoryInvitation,
 };
 use teamai_publish::{PublishPackage, PublishPolicyResult, PublishRequestSummary};
 use teamai_sync::{
@@ -52,8 +54,6 @@ struct DeepLinkState {
 
 #[derive(Debug, thiserror::Error)]
 enum CommandError {
-    #[error("{0}")]
-    Message(String),
     #[error("{message}")]
     Coded { code: &'static str, message: String },
 }
@@ -68,14 +68,12 @@ impl CommandError {
 
     fn code(&self) -> &'static str {
         match self {
-            Self::Message(_) => "command_error",
             Self::Coded { code, .. } => code,
         }
     }
 
     fn message(&self) -> &str {
         match self {
-            Self::Message(message) => message,
             Self::Coded { message, .. } => message,
         }
     }
@@ -172,9 +170,45 @@ struct PublishResult {
     package: PublishPackage,
     policy: PublishPolicyResult,
     request: PublishRequestSummary,
-    pull_request: teamai_provider::PullRequest,
+    pull_request: PublishPullRequestSummary,
     target_workspace: String,
     uploaded_files: Vec<String>,
+    auto_merge: Option<PublishAutoMergeResult>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishPullRequestSummary {
+    number: u64,
+    title: String,
+    html_url: String,
+    state: String,
+}
+
+impl From<teamai_provider::PullRequest> for PublishPullRequestSummary {
+    fn from(value: teamai_provider::PullRequest) -> Self {
+        Self {
+            number: value.number,
+            title: value.title,
+            html_url: value.html_url,
+            state: value.state,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishAutoMergeResult {
+    merged: bool,
+    deleted_branch: bool,
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishDraftInput {
+    file_path: String,
+    after: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -887,6 +921,7 @@ fn install_skill(
     source: String,
     targets: Vec<String>,
     confirmed_risk: Option<bool>,
+    project_targets: Option<Vec<ProjectInstallTarget>>,
 ) -> CommandResult<InstallReport> {
     let source_dir = PathBuf::from(source);
     let parse_result = teamai_manifest::parse_skill_dir(&source_dir)?;
@@ -908,11 +943,50 @@ fn install_skill(
             ),
         ));
     }
-    Ok(teamai_installer::install(InstallOptions {
-        source_dir,
-        targets,
-        target_roots: Vec::<TargetRoot>::new(),
-    })?)
+    let mut report = InstallReport {
+        manifest,
+        installed: Vec::new(),
+        skipped: Vec::new(),
+    };
+
+    if !targets.is_empty() {
+        merge_install_report(
+            &mut report,
+            teamai_installer::install(InstallOptions {
+                source_dir: source_dir.clone(),
+                targets,
+                target_roots: Vec::<TargetRoot>::new(),
+            })?,
+        );
+    }
+
+    for target in project_targets.unwrap_or_default() {
+        let project_root = normalize_project_root(&target.project_root)?;
+        let root = project_runtime_root(&project_root, &target.runtime).ok_or_else(|| {
+            CommandError::coded(
+                "unsupported_runtime",
+                format!("runtime '{}' is not supported", target.runtime),
+            )
+        })?;
+        merge_install_report(
+            &mut report,
+            teamai_installer::install(InstallOptions {
+                source_dir: source_dir.clone(),
+                targets: vec![target.runtime.clone()],
+                target_roots: vec![TargetRoot {
+                    target: target.runtime,
+                    root,
+                }],
+            })?,
+        );
+    }
+
+    Ok(report)
+}
+
+fn merge_install_report(report: &mut InstallReport, next: InstallReport) {
+    report.installed.extend(next.installed);
+    report.skipped.extend(next.skipped);
 }
 
 #[tauri::command]
@@ -959,6 +1033,7 @@ struct ManagedSkill {
     /// cached verdict is shown as stale and the user is nudged to re-review.
     review_stale: bool,
     targets: Vec<ManagedSkillTarget>,
+    project_deployments: Vec<ManagedSkillProjectDeployment>,
 }
 
 /// Build the review fields of a `ManagedSkill` from a stored row. `current_hash`
@@ -992,6 +1067,48 @@ struct ManagedSkillTarget {
     runtime: String,
     enabled: bool,
     target_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectInstallTarget {
+    runtime: String,
+    project_root: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedSkillProjectDeployment {
+    id: i64,
+    runtime: String,
+    project_root: String,
+    target_path: String,
+    enabled: bool,
+    status: String,
+    installed_hash: String,
+    last_seen_hash: String,
+    installed_at: String,
+    updated_at: String,
+    last_checked_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PathOpener {
+    id: String,
+    label: String,
+    app_name: Option<String>,
+    icon_url: Option<String>,
+    icon_urls: Option<PathOpenerIconUrls>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PathOpenerIconUrls {
+    small: String,
+    #[serde(rename = "default")]
+    default_size: String,
+    large: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1051,6 +1168,9 @@ fn db_list_skills(app: tauri::AppHandle) -> CommandResult<Vec<ManagedSkill>> {
     let all_targets = db
         .get_all_targets()
         .map_err(|e| CommandError::coded("db_error", e.to_string()))?;
+    let all_project_deployments = db
+        .list_project_deployments()
+        .map_err(|e| CommandError::coded("db_error", e.to_string()))?;
 
     Ok(skills
         .into_iter()
@@ -1062,6 +1182,23 @@ fn db_list_skills(app: tauri::AppHandle) -> CommandResult<Vec<ManagedSkill>> {
                     runtime: t.runtime.clone(),
                     enabled: t.enabled,
                     target_path: t.target_path.clone(),
+                })
+                .collect();
+            let project_deployments: Vec<ManagedSkillProjectDeployment> = all_project_deployments
+                .iter()
+                .filter(|deployment| deployment.skill_id == s.id)
+                .map(|deployment| ManagedSkillProjectDeployment {
+                    id: deployment.id,
+                    runtime: deployment.runtime.clone(),
+                    project_root: deployment.project_root.clone(),
+                    target_path: deployment.target_path.clone(),
+                    enabled: deployment.enabled,
+                    status: deployment.status.clone(),
+                    installed_hash: deployment.installed_hash.clone(),
+                    last_seen_hash: deployment.last_seen_hash.clone(),
+                    installed_at: deployment.installed_at.clone(),
+                    updated_at: deployment.updated_at.clone(),
+                    last_checked_at: deployment.last_checked_at.clone(),
                 })
                 .collect();
             // Use baseline_hash (updated on download/sync) as the staleness
@@ -1092,6 +1229,7 @@ fn db_list_skills(app: tauri::AppHandle) -> CommandResult<Vec<ManagedSkill>> {
                 reviewed_at,
                 review_stale,
                 targets,
+                project_deployments,
             }
         })
         .collect())
@@ -1162,6 +1300,194 @@ fn db_disable_skill(app: tauri::AppHandle, skill_id: String, runtime: String) ->
     Ok(())
 }
 
+fn normalize_project_root(project_root: &str) -> CommandResult<PathBuf> {
+    let raw = PathBuf::from(project_root.trim());
+    if !raw.is_dir() {
+        return Err(CommandError::coded(
+            "invalid_project_root",
+            format!("'{}' is not a project directory", raw.display()),
+        ));
+    }
+    raw.canonicalize()
+        .map_err(|err| CommandError::coded("invalid_project_root", err.to_string()))
+}
+
+fn project_runtime_root(project_root: &Path, runtime: &str) -> Option<PathBuf> {
+    db::SUPPORTED_RUNTIMES
+        .iter()
+        .find(|r| r.id == runtime)
+        .map(|r| project_root.join(r.global_path))
+}
+
+fn project_target_path(
+    project_root: &Path,
+    runtime: &str,
+    skill_id: &str,
+) -> CommandResult<PathBuf> {
+    let root = project_runtime_root(project_root, runtime).ok_or_else(|| {
+        CommandError::coded(
+            "unsupported_runtime",
+            format!("runtime '{}' is not supported", runtime),
+        )
+    })?;
+    Ok(root.join(skill_id))
+}
+
+fn link_project_deployments(
+    db_guard: &db::Database,
+    skill_id: &str,
+    source_path: &Path,
+    project_targets: &[ProjectInstallTarget],
+    link_mode: &str,
+    installed_hash: &str,
+) -> CommandResult<()> {
+    for target in project_targets {
+        let project_root = normalize_project_root(&target.project_root)?;
+        let target_path = project_target_path(&project_root, &target.runtime, skill_id)?;
+        db::link_skill(source_path, &target_path, link_mode)
+            .map_err(|e| CommandError::coded("link_error", e.to_string()))?;
+        db_guard
+            .upsert_project_deployment(
+                skill_id,
+                &target.runtime,
+                &project_root.to_string_lossy(),
+                &target_path.to_string_lossy(),
+                installed_hash,
+            )
+            .map_err(|e| CommandError::coded("db_error", e.to_string()))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn db_check_project_deployments(app: tauri::AppHandle) -> CommandResult<usize> {
+    let database = app.state::<Mutex<db::Database>>();
+    let db_guard = database.lock().unwrap();
+    let rows = db_guard
+        .list_project_deployments()
+        .map_err(|e| CommandError::coded("db_error", e.to_string()))?;
+    let mut changed = 0;
+    for row in rows {
+        if !row.enabled {
+            let target_path = PathBuf::from(&row.target_path);
+            if target_path.exists() || target_path.is_symlink() {
+                db::unlink_skill(&target_path)
+                    .map_err(|e| CommandError::coded("unlink_error", e.to_string()))?;
+                changed += 1;
+            }
+            if row.status != "paused" {
+                changed += 1;
+            }
+            db_guard
+                .set_project_deployment_status(row.id, "paused", &row.last_seen_hash)
+                .map_err(|e| CommandError::coded("db_error", e.to_string()))?;
+            continue;
+        }
+        let exists = PathBuf::from(&row.target_path).join("SKILL.md").is_file();
+        let next_status = if exists { "active" } else { "missing" };
+        if row.status != next_status {
+            changed += 1;
+        }
+        db_guard
+            .set_project_deployment_status(row.id, next_status, &row.last_seen_hash)
+            .map_err(|e| CommandError::coded("db_error", e.to_string()))?;
+    }
+    Ok(changed)
+}
+
+#[tauri::command]
+fn db_set_project_deployment_enabled(
+    app: tauri::AppHandle,
+    deployment_id: i64,
+    enabled: bool,
+) -> CommandResult<()> {
+    let database = app.state::<Mutex<db::Database>>();
+    let db_guard = database.lock().unwrap();
+    let deployment = db_guard
+        .get_project_deployment(deployment_id)
+        .map_err(|e| CommandError::coded("db_error", e.to_string()))?
+        .ok_or_else(|| {
+            CommandError::coded(
+                "project_deployment_not_found",
+                format!("project deployment '{}' not found", deployment_id),
+            )
+        })?;
+
+    if enabled {
+        let skill = db_guard
+            .get_skill(&deployment.skill_id)
+            .map_err(|e| CommandError::coded("db_error", e.to_string()))?
+            .ok_or_else(|| {
+                CommandError::coded(
+                    "skill_not_found",
+                    format!("skill '{}' not found", deployment.skill_id),
+                )
+            })?;
+        let source_path = PathBuf::from(&skill.local_path);
+        if !source_path.join("SKILL.md").is_file() {
+            return Err(CommandError::coded(
+                "skill_source_missing",
+                format!("'{}' is missing SKILL.md", source_path.display()),
+            ));
+        }
+        let target_path = PathBuf::from(&deployment.target_path);
+        if !target_path.join("SKILL.md").is_file() {
+            if target_path.is_symlink() {
+                db::unlink_skill(&target_path)
+                    .map_err(|e| CommandError::coded("unlink_error", e.to_string()))?;
+            } else if target_path.exists() {
+                return Err(CommandError::coded(
+                    "project_target_conflict",
+                    format!("'{}' exists but is not a skill", target_path.display()),
+                ));
+            }
+            db::link_skill(&source_path, &target_path, &skill.link_mode)
+                .map_err(|e| CommandError::coded("link_error", e.to_string()))?;
+        }
+        db_guard
+            .set_project_deployment_status(deployment_id, "active", &skill.baseline_hash)
+            .map_err(|e| CommandError::coded("db_error", e.to_string()))?;
+    } else {
+        let target_path = PathBuf::from(&deployment.target_path);
+        if target_path.exists() || target_path.is_symlink() {
+            db::unlink_skill(&target_path)
+                .map_err(|e| CommandError::coded("unlink_error", e.to_string()))?;
+        }
+        db_guard
+            .set_project_deployment_status(deployment_id, "paused", &deployment.last_seen_hash)
+            .map_err(|e| CommandError::coded("db_error", e.to_string()))?;
+    }
+
+    db_guard
+        .set_project_deployment_enabled(deployment_id, enabled)
+        .map_err(|e| CommandError::coded("db_error", e.to_string()))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn db_delete_project_deployment(app: tauri::AppHandle, deployment_id: i64) -> CommandResult<()> {
+    let database = app.state::<Mutex<db::Database>>();
+    let db_guard = database.lock().unwrap();
+    let deployment = db_guard
+        .get_project_deployment(deployment_id)
+        .map_err(|e| CommandError::coded("db_error", e.to_string()))?
+        .ok_or_else(|| {
+            CommandError::coded(
+                "project_deployment_not_found",
+                format!("project deployment '{}' not found", deployment_id),
+            )
+        })?;
+    let target_path = PathBuf::from(&deployment.target_path);
+    if target_path.exists() || target_path.is_symlink() {
+        db::unlink_skill(&target_path)
+            .map_err(|e| CommandError::coded("unlink_error", e.to_string()))?;
+    }
+    db_guard
+        .delete_project_deployment(deployment_id)
+        .map_err(|e| CommandError::coded("db_error", e.to_string()))?;
+    Ok(())
+}
+
 /// Scan all IDE directories for skills not managed by us.
 #[tauri::command]
 fn db_scan_unmanaged(app: tauri::AppHandle) -> CommandResult<Vec<UnmanagedSkillInfo>> {
@@ -1198,6 +1524,7 @@ fn db_import_skill(
     skill_id: String,
     source_path: String,
     link_mode: Option<String>,
+    project_targets: Option<Vec<ProjectInstallTarget>>,
 ) -> CommandResult<ManagedSkill> {
     let paths = AppPaths::resolve()?;
     let database = app.state::<Mutex<db::Database>>();
@@ -1212,10 +1539,22 @@ fn db_import_skill(
         ));
     }
 
-    let source_manifest = teamai_manifest::parse_skill_dir(&source)
-        .ok()
-        .and_then(|p| p.manifest);
-    let resolved_skill_id = resolve_import_skill_id(&skill_id, &source, source_manifest.as_ref())?;
+    if !source.join("SKILL.md").is_file() {
+        return Err(CommandError::coded(
+            "missing_skill_md",
+            "selected directory must contain SKILL.md",
+        ));
+    }
+
+    let source_parse = teamai_manifest::parse_skill_dir(&source)
+        .map_err(|err| CommandError::coded("invalid_skill_source", err.to_string()))?;
+    let source_manifest = source_parse.manifest.ok_or_else(|| {
+        CommandError::coded(
+            "invalid_skill_source",
+            format!("invalid SKILL.md metadata: {:?}", source_parse.errors),
+        )
+    })?;
+    let resolved_skill_id = resolve_import_skill_id(&skill_id, &source_manifest.name)?;
     let dest = paths.home.join("skills").join(&resolved_skill_id);
 
     // Copy skill to our data directory
@@ -1263,9 +1602,23 @@ fn db_import_skill(
     let targets = db_guard
         .get_targets_for_skill(&resolved_skill_id)
         .map_err(|e| CommandError::coded("db_error", e.to_string()))?;
+    let project_targets = project_targets.unwrap_or_default();
+    if !project_targets.is_empty() {
+        link_project_deployments(
+            &db_guard,
+            &resolved_skill_id,
+            &dest,
+            &project_targets,
+            &link_mode,
+            &baseline_hash,
+        )?;
+    }
+    let project_deployments = db_guard
+        .list_project_deployments()
+        .map_err(|e| CommandError::coded("db_error", e.to_string()))?;
 
     Ok(ManagedSkill {
-        id: resolved_skill_id,
+        id: resolved_skill_id.clone(),
         name,
         description,
         version,
@@ -1294,35 +1647,37 @@ fn db_import_skill(
                 target_path: t.target_path,
             })
             .collect(),
+        project_deployments: project_deployments
+            .into_iter()
+            .filter(|deployment| deployment.skill_id == resolved_skill_id)
+            .map(|deployment| ManagedSkillProjectDeployment {
+                id: deployment.id,
+                runtime: deployment.runtime,
+                project_root: deployment.project_root,
+                target_path: deployment.target_path,
+                enabled: deployment.enabled,
+                status: deployment.status,
+                installed_hash: deployment.installed_hash,
+                last_seen_hash: deployment.last_seen_hash,
+                installed_at: deployment.installed_at,
+                updated_at: deployment.updated_at,
+                last_checked_at: deployment.last_checked_at,
+            })
+            .collect(),
     })
 }
 
-fn resolve_import_skill_id(
-    requested: &str,
-    source: &Path,
-    manifest: Option<&teamai_manifest::SkillManifest>,
-) -> CommandResult<String> {
-    let candidate = requested
-        .trim()
-        .is_empty()
-        .then(|| manifest.map(|m| m.id.as_str()))
-        .flatten()
-        .unwrap_or_else(|| requested.trim());
-
-    let fallback = source
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("skill");
-    let raw = if candidate.is_empty() {
-        fallback
+fn resolve_import_skill_id(requested: &str, skill_name: &str) -> CommandResult<String> {
+    let raw = if requested.trim().is_empty() {
+        skill_name.trim()
     } else {
-        candidate
+        requested.trim()
     };
     let id = sanitize_skill_id(raw);
     if id.is_empty() {
         return Err(CommandError::coded(
             "invalid_skill_id",
-            "skill id could not be inferred from the selected directory",
+            "skill id could not be inferred from SKILL.md name",
         ));
     }
     Ok(id)
@@ -1406,6 +1761,7 @@ async fn download_skill_async(
     description: Option<String>,
     targets: Vec<String>,
     link_mode: Option<String>,
+    project_targets: Option<Vec<ProjectInstallTarget>>,
 ) -> CommandResult<()> {
     let paths = AppPaths::resolve()?;
     teamai_sync::ensure_local_state(&paths)?;
@@ -1415,6 +1771,7 @@ async fn download_skill_async(
     let dest = paths.home.join("skills").join(&asset_id);
     let display_name = name.unwrap_or_else(|| asset_id.clone());
     let description = description.unwrap_or_default();
+    let project_targets = project_targets.unwrap_or_default();
     let version = version
         .map(|v| v.trim().to_owned())
         .filter(|v| !v.is_empty())
@@ -1436,6 +1793,54 @@ async fn download_skill_async(
                     ))
                 }
                 "installed" => {
+                    if targets.is_empty() && project_targets.is_empty() {
+                        return Err(CommandError::coded(
+                            "already_installed",
+                            format!("'{asset_id}' is already installed"),
+                        ));
+                    }
+                    let source_path = PathBuf::from(&existing.local_path);
+                    for runtime in &targets {
+                        let Some(home) = dirs::home_dir() else {
+                            continue;
+                        };
+                        let Some(target_dir) = db::resolve_runtime_global_path(&home, runtime)
+                        else {
+                            continue;
+                        };
+                        let target_path = target_dir.join(&asset_id);
+                        db::link_skill(&source_path, &target_path, &existing.link_mode)
+                            .map_err(|e| CommandError::coded("link_error", e.to_string()))?;
+                        db_guard
+                            .set_target_enabled(
+                                &asset_id,
+                                runtime,
+                                true,
+                                &target_path.to_string_lossy(),
+                            )
+                            .map_err(|e| CommandError::coded("db_error", e.to_string()))?;
+                    }
+                    link_project_deployments(
+                        &db_guard,
+                        &asset_id,
+                        &source_path,
+                        &project_targets,
+                        &existing.link_mode,
+                        &existing.baseline_hash,
+                    )?;
+                    emit_download_progress(
+                        &app,
+                        SkillDownloadProgress {
+                            skill_id: asset_id,
+                            status: "installed".to_owned(),
+                            progress: 100,
+                            error: None,
+                        },
+                    );
+                    return Ok(());
+                }
+                "error" => {}
+                _ if !targets.is_empty() || !project_targets.is_empty() => {
                     return Err(CommandError::coded(
                         "already_installed",
                         format!("'{asset_id}' is already installed"),
@@ -1479,6 +1884,7 @@ async fn download_skill_async(
         skill_path,
         version,
         targets,
+        project_targets,
         link_mode,
         dest,
         token,
@@ -1499,6 +1905,7 @@ async fn run_skill_download(
     skill_path: Option<String>,
     version: String,
     targets: Vec<String>,
+    project_targets: Vec<ProjectInstallTarget>,
     link_mode: String,
     dest: PathBuf,
     token: Option<String>,
@@ -1606,6 +2013,23 @@ async fn run_skill_download(
         }
     }
 
+    {
+        let database = app.state::<Mutex<db::Database>>();
+        let lock = database.lock();
+        if let Ok(db_guard) = lock {
+            if let Err(err) = link_project_deployments(
+                &db_guard,
+                &asset_id,
+                &dest,
+                &project_targets,
+                &link_mode,
+                &baseline_hash,
+            ) {
+                tracing::warn!(skill = %asset_id, error = %err, "failed to link skill into project folder");
+            }
+        }
+    }
+
     emit_download_progress(
         &app,
         SkillDownloadProgress {
@@ -1625,6 +2049,186 @@ fn open_data_dir(app: tauri::AppHandle) -> CommandResult<()> {
         .open_path(paths.home.to_string_lossy().to_string(), None::<&str>)
         .map_err(|err| CommandError::coded("open_dir_failed", err.to_string()))?;
     Ok(())
+}
+
+#[tauri::command]
+fn open_local_path(
+    app: tauri::AppHandle,
+    path: String,
+    opener: Option<String>,
+) -> CommandResult<()> {
+    let path = PathBuf::from(path.trim());
+    if !path.exists() {
+        return Err(CommandError::coded(
+            "path_not_found",
+            format!("'{}' does not exist", path.display()),
+        ));
+    }
+    let opener = opener
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    match opener.as_deref() {
+        None | Some("default") => open_with_system_default(&app, &path)?,
+        Some(token) => {
+            if let Some(candidate) = find_path_opener_candidate(token) {
+                open_with_candidate(&app, &path, candidate)?;
+            } else {
+                app.opener()
+                    .open_path(path.to_string_lossy().to_string(), Some(token))
+                    .map_err(|err| CommandError::coded("open_path_failed", err.to_string()))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn list_path_openers() -> CommandResult<Vec<PathOpener>> {
+    Ok(available_path_openers())
+}
+
+fn available_path_openers() -> Vec<PathOpener> {
+    let mut openers: Vec<PathOpener> = app_icons::candidates()
+        .iter()
+        .filter(|candidate| path_opener_available(candidate))
+        .map(path_opener)
+        .collect();
+    if openers.is_empty() {
+        openers.push(PathOpener {
+            id: "default".to_owned(),
+            label: "Default".to_owned(),
+            app_name: None,
+            icon_url: None,
+            icon_urls: None,
+        });
+    }
+    openers
+}
+
+fn path_opener_available(candidate: &app_icons::PathOpenerCandidate) -> bool {
+    candidate
+        .app_name
+        .and_then(app_icons::find_app_bundle)
+        .is_some()
+        || find_candidate_cli(candidate).is_some()
+}
+
+fn path_opener(candidate: &app_icons::PathOpenerCandidate) -> PathOpener {
+    let icon_urls = PathOpenerIconUrls {
+        small: app_icons::icon_url(candidate.id, app_icons::IconSize::Small),
+        default_size: app_icons::icon_url(candidate.id, app_icons::IconSize::Default),
+        large: app_icons::icon_url(candidate.id, app_icons::IconSize::Large),
+    };
+    PathOpener {
+        id: candidate.id.to_owned(),
+        label: candidate.label.to_owned(),
+        app_name: candidate.app_name.map(str::to_owned),
+        icon_url: Some(icon_urls.default_size.clone()),
+        icon_urls: Some(icon_urls),
+    }
+}
+
+fn find_path_opener_candidate(token: &str) -> Option<&'static app_icons::PathOpenerCandidate> {
+    app_icons::find_candidate(token)
+}
+
+fn open_with_system_default(app: &tauri::AppHandle, path: &Path) -> CommandResult<()> {
+    app.opener()
+        .open_path(path.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|err| CommandError::coded("open_path_failed", err.to_string()))?;
+    Ok(())
+}
+
+fn open_with_candidate(
+    app: &tauri::AppHandle,
+    path: &Path,
+    candidate: &app_icons::PathOpenerCandidate,
+) -> CommandResult<()> {
+    if candidate.id == "finder" {
+        spawn_path_command("/usr/bin/open", ["-R"], path)?;
+        return Ok(());
+    }
+
+    if let Some(cli) = find_candidate_cli(candidate) {
+        Command::new(&cli).arg(path).spawn().map_err(|err| {
+            CommandError::coded(
+                "open_path_failed",
+                format!("failed to launch {}: {err}", cli.display()),
+            )
+        })?;
+        return Ok(());
+    }
+
+    if let Some(app_name) = candidate.app_name {
+        app.opener()
+            .open_path(path.to_string_lossy().to_string(), Some(app_name))
+            .map_err(|err| CommandError::coded("open_path_failed", err.to_string()))?;
+        return Ok(());
+    }
+
+    open_with_system_default(app, path)
+}
+
+fn spawn_path_command<const N: usize>(
+    command: &str,
+    args: [&str; N],
+    path: &Path,
+) -> CommandResult<()> {
+    let mut cmd = Command::new(command);
+    for arg in args {
+        cmd.arg(arg);
+    }
+    cmd.arg(path).spawn().map_err(|err| {
+        CommandError::coded(
+            "open_path_failed",
+            format!("failed to launch {command}: {err}"),
+        )
+    })?;
+    Ok(())
+}
+
+fn find_candidate_cli(candidate: &app_icons::PathOpenerCandidate) -> Option<PathBuf> {
+    if let Some(app_name) = candidate.app_name {
+        if let Some(bundle_path) = app_icons::find_app_bundle(app_name) {
+            for relative_path in candidate.bundle_cli_paths {
+                let path = bundle_path.join(relative_path);
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+
+    for name in candidate.cli_names {
+        if let Some(path) = find_executable_in_path(name) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn find_executable_in_path(name: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    for root in std::env::split_paths(&path_var) {
+        let path = root.join(name);
+        if path.exists() {
+            return Some(path);
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            for suffix in [".exe", ".cmd"] {
+                if name.ends_with(suffix) {
+                    continue;
+                }
+                let path = root.join(format!("{name}{suffix}"));
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Get cache size breakdown by workspace (from SQLite).
@@ -2208,6 +2812,241 @@ fn rewrite_skill_id(skill_dir: &Path, new_id: &str) -> CommandResult<()> {
     Ok(())
 }
 
+fn bump_version_string(current: &str, bump: &str) -> CommandResult<String> {
+    let mut parts = current
+        .split('.')
+        .map(|part| part.parse::<u64>().unwrap_or(0))
+        .collect::<Vec<_>>();
+    parts.resize(3, 0);
+    let next = match bump {
+        "major" => (parts[0] + 1, 0, 0),
+        "minor" => (parts[0], parts[1] + 1, 0),
+        "patch" => (parts[0], parts[1], parts[2] + 1),
+        other => {
+            return Err(CommandError::coded(
+                "invalid_version_bump",
+                format!("unsupported version bump: {other}"),
+            ));
+        }
+    };
+    Ok(format!("{}.{}.{}", next.0, next.1, next.2))
+}
+
+fn rewrite_yaml_scalar_line(raw: &str, field: &str, value: &str, frontmatter_only: bool) -> String {
+    let mut in_frontmatter = !frontmatter_only;
+    let mut seen_frontmatter_start = false;
+    let mut replaced = false;
+    let mut lines = Vec::new();
+
+    for (index, line) in raw.lines().enumerate() {
+        let trimmed = line.trim();
+        if frontmatter_only && trimmed == "---" {
+            if index == 0 && !seen_frontmatter_start {
+                seen_frontmatter_start = true;
+                in_frontmatter = true;
+                lines.push(line.to_owned());
+                continue;
+            }
+            if seen_frontmatter_start && in_frontmatter {
+                if !replaced {
+                    lines.push(format!("{field}: {value}"));
+                    replaced = true;
+                }
+                in_frontmatter = false;
+                lines.push(line.to_owned());
+                continue;
+            }
+        }
+
+        if in_frontmatter {
+            let trimmed_start = line.trim_start();
+            if trimmed_start
+                .strip_prefix(field)
+                .and_then(|rest| rest.strip_prefix(':'))
+                .is_some()
+            {
+                let leading = &line[..line.len() - trimmed_start.len()];
+                lines.push(format!("{leading}{field}: {value}"));
+                replaced = true;
+                continue;
+            }
+        }
+
+        lines.push(line.to_owned());
+    }
+
+    if !replaced && !frontmatter_only {
+        lines.push(format!("{field}: {value}"));
+    }
+
+    let mut rewritten = lines.join("\n");
+    if raw.ends_with('\n') {
+        rewritten.push('\n');
+    }
+    rewritten
+}
+
+fn rewrite_manifest_json_scalar(path: &Path, field: &str, value: &str) -> CommandResult<()> {
+    let raw = fs::read_to_string(path).map_err(CommandError::from)?;
+    let mut json: serde_json::Value = serde_json::from_str(&raw).map_err(CommandError::from)?;
+    let object = json.as_object_mut().ok_or_else(|| {
+        CommandError::coded(
+            "invalid_manifest_json",
+            format!("{} is not a JSON object", path.display()),
+        )
+    })?;
+    object.insert(
+        field.to_owned(),
+        serde_json::Value::String(value.to_owned()),
+    );
+    fs::write(
+        path,
+        serde_json::to_string_pretty(&json).map_err(CommandError::from)? + "\n",
+    )
+    .map_err(CommandError::from)
+}
+
+fn rewrite_skill_version(skill_dir: &Path, version: &str) -> CommandResult<()> {
+    let mut touched = false;
+    for filename in ["manifest.yaml", "manifest.yml"] {
+        let path = skill_dir.join(filename);
+        if !path.exists() {
+            continue;
+        }
+        let raw = fs::read_to_string(&path).map_err(CommandError::from)?;
+        fs::write(
+            &path,
+            rewrite_yaml_scalar_line(&raw, "version", version, false),
+        )
+        .map_err(CommandError::from)?;
+        touched = true;
+    }
+
+    let json_path = skill_dir.join("manifest.json");
+    if json_path.exists() {
+        rewrite_manifest_json_scalar(&json_path, "version", version)?;
+        touched = true;
+    }
+
+    let skill_md_path = skill_dir.join("SKILL.md");
+    if skill_md_path.exists() {
+        let raw = fs::read_to_string(&skill_md_path).map_err(CommandError::from)?;
+        let rewritten = rewrite_yaml_scalar_line(&raw, "version", version, true);
+        if rewritten != raw {
+            fs::write(&skill_md_path, rewritten).map_err(CommandError::from)?;
+            touched = true;
+        }
+    }
+
+    if touched {
+        Ok(())
+    } else {
+        Err(CommandError::coded(
+            "missing_version_target",
+            "could not find a manifest or SKILL.md frontmatter to update version",
+        ))
+    }
+}
+
+fn safe_relative_path(path: &Path) -> CommandResult<()> {
+    if path.as_os_str().is_empty() {
+        return Err(CommandError::coded(
+            "invalid_publish_path",
+            "publish path cannot be empty",
+        ));
+    }
+    for component in path.components() {
+        if !matches!(component, Component::Normal(_)) {
+            return Err(CommandError::coded(
+                "invalid_publish_path",
+                format!("unsafe publish path: {}", path.display()),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn draft_relative_path(skill_path: &str, file_path: &str) -> CommandResult<PathBuf> {
+    let skill_path = skill_path.trim_matches('/');
+    let file_path = file_path.trim_matches('/');
+    let prefix = format!("{skill_path}/");
+    let rel = file_path.strip_prefix(&prefix).ok_or_else(|| {
+        CommandError::coded(
+            "invalid_publish_draft",
+            format!("draft file {file_path} is outside skill path {skill_path}"),
+        )
+    })?;
+    let rel = PathBuf::from(rel);
+    safe_relative_path(&rel)?;
+    Ok(rel)
+}
+
+fn apply_publish_draft(
+    scratch: &Path,
+    skill_path: &str,
+    draft: &PublishDraftInput,
+) -> CommandResult<()> {
+    let rel = draft_relative_path(skill_path, &draft.file_path)?;
+    let dest = scratch.join(rel);
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(CommandError::from)?;
+    }
+    fs::write(dest, draft.after.as_bytes()).map_err(CommandError::from)
+}
+
+fn repo_path_for_skill_file(skill_path: &str, relative_path: &Path) -> CommandResult<String> {
+    safe_relative_path(relative_path)?;
+    let mut parts = skill_path
+        .trim_matches('/')
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        return Err(CommandError::coded(
+            "invalid_skill_path",
+            "skill path inside the workspace cannot be empty",
+        ));
+    }
+    for component in relative_path.components() {
+        let Component::Normal(value) = component else {
+            return Err(CommandError::coded(
+                "invalid_publish_path",
+                format!("unsafe publish path: {}", relative_path.display()),
+            ));
+        };
+        parts.push(value.to_string_lossy().to_string());
+    }
+    Ok(parts.join("/"))
+}
+
+async fn workspace_git_ref(
+    provider: &GitHubProvider,
+    workspace: &WorkspaceRef,
+    source_ref: Option<&str>,
+) -> CommandResult<GitRef> {
+    match source_ref.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(name) => {
+            if name.chars().next().map(|c| c == 'v').unwrap_or(false)
+                || name.starts_with("refs/tags/")
+            {
+                Ok(GitRef::Tag(
+                    name.trim_start_matches("refs/tags/").to_owned(),
+                ))
+            } else {
+                Ok(GitRef::Branch(name.to_owned()))
+            }
+        }
+        None => Ok(GitRef::Branch(
+            provider
+                .get_workspace(workspace)
+                .await
+                .map_err(provider_command_error)?
+                .default_branch,
+        )),
+    }
+}
+
 #[tauri::command]
 async fn preview_publish_from_workspace(
     source_workspace: String,
@@ -2390,15 +3229,221 @@ async fn publish_skill_to_workspace(
         )
         .await
         .map_err(|err| CommandError::coded("publish_failed", err.to_string()))?;
+    let pr_number = result.pull_request.number;
+    let auto_merge = if policy.auto_merge_allowed
+        && can_auto_merge_workspace(&provider, &target_ws).await
+    {
+        Some(
+            try_merge_and_cleanup_branch(&provider, &target_ws, pr_number, &request.branch_name)
+                .await,
+        )
+    } else {
+        None
+    };
 
     Ok(PublishResult {
         package,
         policy,
         request,
-        pull_request: result.pull_request,
+        pull_request: result.pull_request.into(),
         target_workspace: target_ws.full_name(),
         uploaded_files: result.uploaded.into_iter().map(|f| f.path).collect(),
+        auto_merge,
     })
+}
+
+#[tauri::command]
+async fn publish_workspace_skill_update(
+    workspace: String,
+    skill_path: String,
+    source_ref: Option<String>,
+    version_bump: String,
+    message: String,
+    draft: Option<PublishDraftInput>,
+    user: Option<String>,
+    confirmed_risk: Option<bool>,
+) -> CommandResult<PublishResult> {
+    let paths = AppPaths::resolve()?;
+    teamai_sync::ensure_local_state(&paths)?;
+    let token = saved_github_token(&paths).ok_or_else(|| {
+        CommandError::coded(
+            "missing_github_token",
+            "log in with GitHub before publishing",
+        )
+    })?;
+    let provider = GitHubProvider::new(token).map_err(provider_command_error)?;
+
+    let target_ws = parse_workspace(&workspace)?;
+    let git_ref = workspace_git_ref(&provider, &target_ws, source_ref.as_deref()).await?;
+    let scratch =
+        fetch_remote_skill_to_temp(&provider, &paths, &target_ws, &skill_path, &git_ref, None)
+            .await?;
+
+    if let Some(draft) = draft.as_ref() {
+        apply_publish_draft(&scratch, &skill_path, draft)?;
+    }
+
+    let current_package = teamai_publish::package_skill(&scratch)?;
+    let next_version = bump_version_string(&current_package.manifest.version, &version_bump)?;
+    rewrite_skill_version(&scratch, &next_version)?;
+
+    let package = teamai_publish::package_skill(&scratch)?;
+    let policy = teamai_publish::evaluate_publish_policy(&package)?;
+
+    if matches!(
+        policy.decision,
+        teamai_publish::PublishPolicyDecision::Reject
+    ) {
+        return Err(CommandError::coded(
+            "publish_rejected",
+            format!(
+                "publish policy rejected this skill: {}",
+                policy.reasons.join("; ")
+            ),
+        ));
+    }
+    if package.risk_level != teamai_core::RiskLevel::Low && !confirmed_risk.unwrap_or(false) {
+        return Err(CommandError::coded(
+            "risk_confirmation_required",
+            format!(
+                "this skill has {} risk; pass confirmedRisk=true to proceed",
+                package.risk_level
+            ),
+        ));
+    }
+
+    let mut request = teamai_publish::build_publish_request(
+        &package,
+        &target_ws,
+        user.as_deref().unwrap_or("local"),
+    );
+    request.title = format!(
+        "Update skill {} to v{}",
+        package.manifest.name, package.manifest.version
+    );
+    let release_notes = message.trim();
+    if !release_notes.is_empty() {
+        request.body = format!("## Release notes\n\n{}\n\n{}", release_notes, request.body);
+    }
+
+    let publish_files = teamai_publish::collect_publish_files(&package)?;
+    let github_files: Vec<GitHubPublishFile> = publish_files
+        .iter()
+        .map(|file| {
+            repo_path_for_skill_file(&skill_path, &file.relative_path).map(|path| {
+                GitHubPublishFile {
+                    path,
+                    bytes: file.bytes.clone(),
+                }
+            })
+        })
+        .collect::<CommandResult<Vec<_>>>()?;
+
+    let result = provider
+        .publish_files_pull_request(
+            &target_ws,
+            GitHubPublishInput {
+                branch_name: request.branch_name.clone(),
+                commit_message: format!(
+                    "teamai: update {} to v{}",
+                    package.manifest.id, package.manifest.version
+                ),
+                title: request.title.clone(),
+                body: request.body.clone(),
+                base: None,
+                files: github_files,
+            },
+        )
+        .await
+        .map_err(|err| CommandError::coded("publish_failed", err.to_string()))?;
+    let pr_number = result.pull_request.number;
+    let auto_merge = if policy.auto_merge_allowed
+        && can_auto_merge_workspace(&provider, &target_ws).await
+    {
+        Some(
+            try_merge_and_cleanup_branch(&provider, &target_ws, pr_number, &request.branch_name)
+                .await,
+        )
+    } else {
+        None
+    };
+
+    Ok(PublishResult {
+        package,
+        policy,
+        request,
+        pull_request: result.pull_request.into(),
+        target_workspace: target_ws.full_name(),
+        uploaded_files: result.uploaded.into_iter().map(|f| f.path).collect(),
+        auto_merge,
+    })
+}
+
+async fn try_merge_and_cleanup_branch(
+    provider: &GitHubProvider,
+    workspace: &WorkspaceRef,
+    number: u64,
+    branch: &str,
+) -> PublishAutoMergeResult {
+    let merge = provider.merge_pull_request(workspace, number).await;
+    match merge {
+        Ok(_) => {
+            let mut deleted_branch = false;
+            let mut error = None;
+            if is_teamai_publish_branch(branch) {
+                match provider.delete_branch(workspace, branch).await {
+                    Ok(()) => deleted_branch = true,
+                    Err(err) => error = Some(format!("merged, but branch cleanup failed: {err}")),
+                }
+            }
+            PublishAutoMergeResult {
+                merged: true,
+                deleted_branch,
+                error,
+            }
+        }
+        Err(err) => PublishAutoMergeResult {
+            merged: false,
+            deleted_branch: false,
+            error: Some(err.to_string()),
+        },
+    }
+}
+
+async fn can_auto_merge_workspace(provider: &GitHubProvider, workspace: &WorkspaceRef) -> bool {
+    let user = match provider.current_user().await {
+        Ok(user) => user,
+        Err(err) => {
+            tracing::warn!(target: "teamai-publish", workspace = %workspace.full_name(), error = %err, "skip auto-merge: unable to read current GitHub user");
+            return false;
+        }
+    };
+    match provider.check_permission(workspace, &user.login).await {
+        Ok(PermissionLevel::Admin | PermissionLevel::Maintain | PermissionLevel::Write) => true,
+        Ok(permission) => {
+            tracing::debug!(target: "teamai-publish", workspace = %workspace.full_name(), user = %user.login, ?permission, "skip auto-merge: insufficient permission");
+            false
+        }
+        Err(err) => {
+            tracing::warn!(target: "teamai-publish", workspace = %workspace.full_name(), user = %user.login, error = %err, "skip auto-merge: permission check failed");
+            false
+        }
+    }
+}
+
+fn is_teamai_publish_branch(branch: &str) -> bool {
+    let parts = branch.split('/').collect::<Vec<_>>();
+    if parts.len() != 4 || parts[0] != "teamai" || parts[1] != "import" {
+        return false;
+    }
+    let skill = parts[2];
+    let hash = parts[3];
+    !skill.is_empty()
+        && skill
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        && hash.len() == 12
+        && hash.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 #[tauri::command]
@@ -3984,6 +5029,129 @@ async fn list_workspace_pull_requests(
 }
 
 #[tauri::command]
+async fn list_workspace_pull_request_files(
+    workspace: String,
+    number: u64,
+) -> CommandResult<Vec<ChangedFile>> {
+    let paths = AppPaths::resolve()?;
+    teamai_sync::ensure_local_state(&paths)?;
+    let token = saved_github_token(&paths).ok_or_else(|| {
+        CommandError::coded(
+            "missing_github_token",
+            "log in with GitHub before reading PR files",
+        )
+    })?;
+    let provider = GitHubProvider::new(token).map_err(provider_command_error)?;
+    let workspace = parse_workspace(&workspace)?;
+    provider
+        .list_pull_request_files(&workspace, number)
+        .await
+        .map_err(provider_command_error)
+}
+
+#[tauri::command]
+async fn merge_workspace_pull_request(
+    workspace: String,
+    number: u64,
+    head_ref: String,
+    head_repo: Option<String>,
+    delete_branch: Option<bool>,
+) -> CommandResult<PublishAutoMergeResult> {
+    let paths = AppPaths::resolve()?;
+    teamai_sync::ensure_local_state(&paths)?;
+    let token = saved_github_token(&paths).ok_or_else(|| {
+        CommandError::coded(
+            "missing_github_token",
+            "log in with GitHub before merging PRs",
+        )
+    })?;
+    let provider = GitHubProvider::new(token).map_err(provider_command_error)?;
+    let workspace = parse_workspace(&workspace)?;
+    let result = provider
+        .merge_pull_request(&workspace, number)
+        .await
+        .map_err(provider_command_error)?;
+    let mut deleted_branch = false;
+    let mut error = None;
+    let can_delete_head = head_repo
+        .as_deref()
+        .map(|repo| repo == workspace.full_name())
+        .unwrap_or(false);
+    if delete_branch.unwrap_or(true) && can_delete_head && is_teamai_publish_branch(&head_ref) {
+        match provider.delete_branch(&workspace, &head_ref).await {
+            Ok(()) => deleted_branch = true,
+            Err(err) => error = Some(format!("merged, but branch cleanup failed: {err}")),
+        }
+    }
+    Ok(PublishAutoMergeResult {
+        merged: result.state == "closed",
+        deleted_branch,
+        error,
+    })
+}
+
+#[tauri::command]
+async fn close_workspace_pull_request(
+    workspace: String,
+    number: u64,
+    comment: Option<String>,
+) -> CommandResult<PullRequestSummary> {
+    let paths = AppPaths::resolve()?;
+    teamai_sync::ensure_local_state(&paths)?;
+    let token = saved_github_token(&paths).ok_or_else(|| {
+        CommandError::coded(
+            "missing_github_token",
+            "log in with GitHub before closing PRs",
+        )
+    })?;
+    let provider = GitHubProvider::new(token).map_err(provider_command_error)?;
+    let workspace = parse_workspace(&workspace)?;
+    if let Some(comment) = comment
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        provider
+            .add_pull_request_comment(&workspace, number, comment)
+            .await
+            .map_err(provider_command_error)?;
+    }
+    provider
+        .close_pull_request(&workspace, number)
+        .await
+        .map_err(provider_command_error)
+}
+
+#[tauri::command]
+async fn add_workspace_pull_request_comment(
+    workspace: String,
+    number: u64,
+    body: String,
+) -> CommandResult<IssueComment> {
+    let paths = AppPaths::resolve()?;
+    teamai_sync::ensure_local_state(&paths)?;
+    let token = saved_github_token(&paths).ok_or_else(|| {
+        CommandError::coded(
+            "missing_github_token",
+            "log in with GitHub before commenting on PRs",
+        )
+    })?;
+    let provider = GitHubProvider::new(token).map_err(provider_command_error)?;
+    let workspace = parse_workspace(&workspace)?;
+    let body = body.trim();
+    if body.is_empty() {
+        return Err(CommandError::coded(
+            "empty_comment",
+            "comment cannot be empty",
+        ));
+    }
+    provider
+        .add_pull_request_comment(&workspace, number, body)
+        .await
+        .map_err(provider_command_error)
+}
+
+#[tauri::command]
 async fn list_workspace_events(workspace: String) -> CommandResult<Vec<RepositoryEvent>> {
     let paths = AppPaths::resolve()?;
     teamai_sync::ensure_local_state(&paths)?;
@@ -4310,7 +5478,7 @@ async fn review_skill(request: ai_review::ReviewRequest) -> CommandResult<ai_rev
     ai_review::review_skill(&request, &prepared.skill_dir, &key)
         .await
         .map_err(|err| match err {
-            ai_review::ReviewError::NotConfigured | ai_review::ReviewError::MissingKey => {
+            ai_review::ReviewError::NotConfigured => {
                 CommandError::coded("ai_not_configured", err.to_string())
             }
             ai_review::ReviewError::UnsupportedProvider(_) => {
@@ -4434,7 +5602,7 @@ async fn review_local_skill(
 /// Shared mapping of an `ai_review::ReviewError` to a coded command error.
 fn map_review_error(err: ai_review::ReviewError) -> CommandError {
     match err {
-        ai_review::ReviewError::NotConfigured | ai_review::ReviewError::MissingKey => {
+        ai_review::ReviewError::NotConfigured => {
             CommandError::coded("ai_not_configured", err.to_string())
         }
         ai_review::ReviewError::UnsupportedProvider(_) => {
@@ -4520,11 +5688,7 @@ fn resolve_github_client_id(client_id: Option<String>) -> CommandResult<String> 
 }
 
 fn default_runtime_targets() -> Vec<String> {
-    vec![
-        "claude-code".to_owned(),
-        "cursor".to_owned(),
-        "codex".to_owned(),
-    ]
+    vec!["claude-code".to_owned(), "codex".to_owned()]
 }
 
 fn local_agent_root_specs(home: &Path) -> Vec<LocalAgentRoot> {
@@ -4666,6 +5830,11 @@ pub fn run() {
     }
 
     tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol("appicon", |_ctx, request, responder| {
+            std::thread::spawn(move || {
+                responder.respond(app_icons::handle_icon_request(request));
+            });
+        })
         .manage(DeepLinkState::default())
         .manage(RegistryCache::default())
         .manage(Mutex::new(database))
@@ -4748,7 +5917,12 @@ pub fn run() {
             preview_publish,
             preview_publish_from_workspace,
             publish_skill_to_workspace,
+            publish_workspace_skill_update,
             list_workspace_pull_requests,
+            list_workspace_pull_request_files,
+            merge_workspace_pull_request,
+            close_workspace_pull_request,
+            add_workspace_pull_request_comment,
             list_workspace_events,
             list_repository_invitations,
             accept_repository_invitation,
@@ -4768,6 +5942,7 @@ pub fn run() {
             db_list_skills,
             db_enable_skill,
             db_disable_skill,
+            db_check_project_deployments,
             db_scan_unmanaged,
             db_import_skill,
             db_cache_stats,
@@ -4786,7 +5961,11 @@ pub fn run() {
             db_unmanage_skill,
             download_skill_async,
             review_local_skill,
-            open_data_dir
+            open_data_dir,
+            open_local_path,
+            list_path_openers,
+            db_set_project_deployment_enabled,
+            db_delete_project_deployment
         ])
         .run(tauri::generate_context!())
         .expect("error while running Team AI Hub");
@@ -4828,11 +6007,7 @@ mod tests {
     fn installed_targets_default_to_supported_agent_runtimes() {
         assert_eq!(
             default_runtime_targets(),
-            vec![
-                "claude-code".to_owned(),
-                "cursor".to_owned(),
-                "codex".to_owned()
-            ]
+            vec!["claude-code".to_owned(), "codex".to_owned()]
         );
     }
 
@@ -4857,6 +6032,32 @@ mod tests {
         assert_eq!(
             humanize_agent_dir_name("code-reviewer_agent"),
             "Code Reviewer Agent"
+        );
+    }
+
+    #[test]
+    fn path_opener_exposes_protocol_icon_urls() {
+        let opener = super::path_opener(&super::app_icons::PATH_OPENER_CANDIDATES[0]);
+        let urls = opener
+            .icon_urls
+            .expect("path opener should include icon urls");
+
+        assert_eq!(opener.id, "vscode");
+        assert_eq!(
+            opener.icon_url.as_deref(),
+            Some("appicon://localhost/vscode?size=default&scale=2&v=2")
+        );
+        assert_eq!(
+            urls.small,
+            "appicon://localhost/vscode?size=small&scale=2&v=2"
+        );
+        assert_eq!(
+            urls.default_size,
+            "appicon://localhost/vscode?size=default&scale=2&v=2"
+        );
+        assert_eq!(
+            urls.large,
+            "appicon://localhost/vscode?size=large&scale=2&v=2"
         );
     }
 }

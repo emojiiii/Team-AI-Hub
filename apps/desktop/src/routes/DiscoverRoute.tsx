@@ -18,7 +18,7 @@ import { useAppStore } from "../state/appStore";
 import { getSkillDetailFromCache, putSkillDetailInCache } from "../lib/workspaceCache";
 import { formatError } from "../utils/format";
 import { DiscoverPage } from "../pages/DiscoverPage";
-import { InstallToToolsDialog } from "../widgets/InstallToToolsDialog";
+import { InstallToToolsDialog, type InstallTargetSelection } from "../widgets/InstallToToolsDialog";
 
 // Lazy-loaded so file preview/tree code stays off the startup path.
 const DiscoverSkillDetail = lazy(() => import("../widgets/DiscoverSkillDetail").then((m) => ({ default: m.DiscoverSkillDetail })));
@@ -125,7 +125,7 @@ export function DiscoverRoute() {
   // shows up in My Skills (downloading bar → installed / retry on error).
   // Empty targets = download locally, deploy to no tools.
   const install = useMutation({
-    mutationFn: async (chosenTargets: string[]) => {
+    mutationFn: async (selection: InstallTargetSelection) => {
       if (!selected || !manifest) throw new Error("no skill selected");
       // Prefer the backend-resolved in-repo path; fall back to the registry id.
       const skillPath = detail.data?.asset.path ?? selected.skillId;
@@ -136,7 +136,8 @@ export function DiscoverRoute() {
         version: manifest.version,
         name: manifest.name,
         description: manifest.description,
-        targets: chosenTargets,
+        targets: selection.targets,
+        projectTargets: selection.projectTargets,
       });
     },
     onSuccess: () => {
@@ -211,9 +212,9 @@ export function DiscoverRoute() {
         sourceLabel={selected?.source ?? ""}
         defaultTargets={targets}
         pending={install.isPending}
-        onConfirm={(chosenTargets) => {
-          setTargets(chosenTargets);
-          install.mutate(chosenTargets);
+        onConfirm={(selection) => {
+          if (!selection.projectTargets.length) setTargets(selection.targets);
+          install.mutate(selection);
         }}
       />
     </>

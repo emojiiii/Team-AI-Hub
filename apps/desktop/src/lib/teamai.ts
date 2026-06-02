@@ -808,9 +808,10 @@ export async function installSkill(
   source: string,
   targets: string[],
   confirmedRisk = false,
+  projectTargets?: ProjectInstallTarget[],
 ): Promise<InstallReport> {
   if (!isTauri) return desktopOnly("Install skill");
-  return invoke("install_skill", { source, targets, confirmedRisk });
+  return invoke("install_skill", { source, targets, confirmedRisk, projectTargets });
 }
 
 /** Remove a skill from specified runtime targets. */
@@ -837,6 +838,37 @@ export interface ManagedSkillTarget {
   runtime: string;
   enabled: boolean;
   targetPath: string;
+}
+
+export interface ProjectInstallTarget {
+  runtime: string;
+  projectRoot: string;
+}
+
+export interface ManagedSkillProjectDeployment {
+  id: number;
+  runtime: string;
+  projectRoot: string;
+  targetPath: string;
+  enabled: boolean;
+  status: "active" | "missing" | "modified" | "error" | "paused";
+  installedHash: string;
+  lastSeenHash: string;
+  installedAt: string;
+  updatedAt: string;
+  lastCheckedAt: string;
+}
+
+export interface PathOpener {
+  id: string;
+  label: string;
+  appName?: string | null;
+  iconUrl?: string | null;
+  iconUrls?: {
+    small: string;
+    default: string;
+    large: string;
+  } | null;
 }
 
 export interface ManagedSkill {
@@ -867,6 +899,7 @@ export interface ManagedSkill {
   /** True when a review exists but the skill changed since (verdict is stale). */
   reviewStale: boolean;
   targets: ManagedSkillTarget[];
+  projectDeployments: ManagedSkillProjectDeployment[];
 }
 
 export interface UnmanagedSkillInfo {
@@ -924,9 +957,14 @@ export async function dbScanUnmanaged(): Promise<UnmanagedSkillInfo[]> {
 }
 
 /** Import an unmanaged skill into our data directory and register it. */
-export async function dbImportSkill(skillId: string, sourcePath: string, linkMode?: string): Promise<ManagedSkill> {
+export async function dbImportSkill(
+  skillId: string,
+  sourcePath: string,
+  linkMode?: string,
+  projectTargets?: ProjectInstallTarget[],
+): Promise<ManagedSkill> {
   if (!isTauri) return desktopOnly("Import skill");
-  return invoke("db_import_skill", { skillId, sourcePath, linkMode });
+  return invoke("db_import_skill", { skillId, sourcePath, linkMode, projectTargets });
 }
 
 /** Open the native directory picker for choosing a skill folder. */
@@ -936,6 +974,11 @@ export async function selectSkillDirectory(): Promise<string | null> {
     options: { directory: true, multiple: false },
   });
   return Array.isArray(selected) ? (selected[0] ?? null) : selected;
+}
+
+/** Open the native directory picker for choosing a project folder. */
+export async function selectProjectDirectory(): Promise<string | null> {
+  return selectSkillDirectory();
 }
 
 export interface SkillDownloadProgress {
@@ -963,6 +1006,7 @@ export async function downloadSkillAsync(args: {
   name?: string;
   description?: string;
   targets: string[];
+  projectTargets?: ProjectInstallTarget[];
   linkMode?: string;
 }): Promise<void> {
   if (!isTauri) return desktopOnly("Download skill");
@@ -1080,6 +1124,21 @@ export async function dbCheckModifications(): Promise<string[]> {
   return invoke("db_check_modifications");
 }
 
+export async function dbCheckProjectDeployments(): Promise<number> {
+  if (!isTauri) return 0;
+  return invoke("db_check_project_deployments");
+}
+
+export async function dbSetProjectDeploymentEnabled(deploymentId: number, enabled: boolean): Promise<void> {
+  if (!isTauri) return desktopOnly("Set project deployment enabled");
+  return invoke("db_set_project_deployment_enabled", { deploymentId, enabled });
+}
+
+export async function dbDeleteProjectDeployment(deploymentId: number): Promise<void> {
+  if (!isTauri) return desktopOnly("Delete project deployment");
+  return invoke("db_delete_project_deployment", { deploymentId });
+}
+
 /** Unmanage a skill: remove from registry, restore real files to IDE directories. */
 export async function dbUnmanageSkill(skillId: string): Promise<void> {
   if (!isTauri) return desktopOnly("Unmanage skill");
@@ -1090,6 +1149,16 @@ export async function dbUnmanageSkill(skillId: string): Promise<void> {
 export async function openDataDir(): Promise<void> {
   if (!isTauri) return desktopOnly("Open data dir");
   return invoke("open_data_dir");
+}
+
+export async function listPathOpeners(): Promise<PathOpener[]> {
+  if (!isTauri) return [{ id: "default", label: "Default", appName: null }];
+  return invoke("list_path_openers");
+}
+
+export async function openLocalPath(path: string, opener?: string | null): Promise<void> {
+  if (!isTauri) return desktopOnly("Open local path");
+  return invoke("open_local_path", { path, opener });
 }
 
 // ---------------------------------------------------------------------------
@@ -1112,6 +1181,12 @@ export interface PullRequestSummary {
   state: string;
 }
 
+export interface PublishAutoMergeResult {
+  merged: boolean;
+  deletedBranch: boolean;
+  error: string | null;
+}
+
 export interface PublishResult {
   package: PublishPreview["package"];
   policy: PublishPolicyResult;
@@ -1119,6 +1194,12 @@ export interface PublishResult {
   pullRequest: PullRequestSummary;
   targetWorkspace: string;
   uploadedFiles: string[];
+  autoMerge: PublishAutoMergeResult | null;
+}
+
+export interface PublishDraftInput {
+  filePath: string;
+  after: string;
 }
 
 export async function previewPublishFromWorkspace(args: {
@@ -1146,6 +1227,20 @@ export async function publishSkillToWorkspace(args: {
   return invoke("publish_skill_to_workspace", args);
 }
 
+export async function publishWorkspaceSkillUpdate(args: {
+  workspace: string;
+  skillPath: string;
+  sourceRef?: string;
+  versionBump: "patch" | "minor" | "major";
+  message: string;
+  draft?: PublishDraftInput | null;
+  user?: string;
+  confirmedRisk?: boolean;
+}): Promise<PublishResult> {
+  if (!isTauri) return desktopOnly("Publish skill update");
+  return invoke("publish_workspace_skill_update", args);
+}
+
 // ---------------------------------------------------------------------------
 // Governance — Pull requests, repository events, repository invitations.
 // All read live from GitHub through the Rust provider; no API server needed.
@@ -1161,9 +1256,18 @@ export interface WorkspacePullRequest {
   author: string | null;
   head_ref: string;
   base_ref: string;
+  head_repo?: string | null;
+  base_repo?: string | null;
   created_at: string;
   updated_at: string;
   body: string | null;
+}
+
+export interface PullRequestComment {
+  id: number;
+  html_url: string;
+  body: string | null;
+  created_at: string;
 }
 
 export interface WorkspaceEvent {
@@ -1193,6 +1297,43 @@ export async function listWorkspacePullRequests(
 ): Promise<WorkspacePullRequest[]> {
   if (!isTauri) return [];
   return invoke("list_workspace_pull_requests", { workspace, state });
+}
+
+export async function listWorkspacePullRequestFiles(args: {
+  workspace: string;
+  number: number;
+}): Promise<ChangedFile[]> {
+  if (!isTauri) return [];
+  return invoke("list_workspace_pull_request_files", args);
+}
+
+export async function mergeWorkspacePullRequest(args: {
+  workspace: string;
+  number: number;
+  headRef: string;
+  headRepo?: string | null;
+  deleteBranch?: boolean;
+}): Promise<PublishAutoMergeResult> {
+  if (!isTauri) return desktopOnly("Merge pull request");
+  return invoke("merge_workspace_pull_request", args);
+}
+
+export async function closeWorkspacePullRequest(args: {
+  workspace: string;
+  number: number;
+  comment?: string | null;
+}): Promise<WorkspacePullRequest> {
+  if (!isTauri) return desktopOnly("Close pull request");
+  return invoke("close_workspace_pull_request", args);
+}
+
+export async function addWorkspacePullRequestComment(args: {
+  workspace: string;
+  number: number;
+  body: string;
+}): Promise<PullRequestComment> {
+  if (!isTauri) return desktopOnly("Comment on pull request");
+  return invoke("add_workspace_pull_request_comment", args);
 }
 
 export async function listWorkspaceEvents(workspace: string): Promise<WorkspaceEvent[]> {

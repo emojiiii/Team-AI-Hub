@@ -293,7 +293,7 @@ function NetworkSection({ settings, update }: { settings: AppSettings; update: <
             placeholder="http://127.0.0.1:7890"
             variant="secondary"
             className="w-[200px]"
-            aria-label="Proxy URL"
+            aria-label={t("settings.proxyUrl.aria")}
           />
         </SettingsRow>
       ) : null}
@@ -393,7 +393,7 @@ function AiSection({ settings, update }: { settings: AppSettings; update: <K ext
               placeholder={AI_PROVIDER_DEFAULTS[provider]?.baseUrl ?? "https://…"}
               variant="secondary"
               className="w-full"
-              aria-label="AI base URL"
+              aria-label={t("settings.ai.baseUrl.aria")}
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
@@ -411,7 +411,7 @@ function AiSection({ settings, update }: { settings: AppSettings; update: <K ext
               placeholder={AI_PROVIDER_DEFAULTS[provider]?.model ?? "model"}
               variant="secondary"
               className="w-full"
-              aria-label="AI model"
+              aria-label={t("settings.ai.model.aria")}
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
@@ -431,7 +431,7 @@ function AiSection({ settings, update }: { settings: AppSettings; update: <K ext
                 placeholder={keyStored ? "••••••••" : "sk-…"}
                 variant="secondary"
                 className="flex-1"
-                aria-label="AI API key"
+                aria-label={t("settings.ai.apiKey.aria")}
                 autoCapitalize="none"
                 autoCorrect="off"
                 spellCheck={false}

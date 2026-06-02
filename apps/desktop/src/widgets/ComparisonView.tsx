@@ -1,15 +1,17 @@
 import type { SemanticChange, SkillComparison } from "../lib/teamai";
-import { riskLabel, riskTone } from "../utils/risk";
+import { useLocale } from "../hooks/useLocale";
+import { riskTone } from "../utils/risk";
 import { Card } from "./Card";
 import { Pill } from "./Pill";
 
-function formatChangeValue(value: unknown) {
-  if (value === null || value === undefined) return "none";
+function formatChangeValue(value: unknown, noneLabel: string) {
+  if (value === null || value === undefined) return noneLabel;
   if (typeof value === "string") return value;
   return JSON.stringify(value);
 }
 
 function SemanticChangeRow({ change }: { change: SemanticChange }) {
+  const { t } = useLocale();
   const risk = change.risk ?? undefined;
   return (
     <div className="rounded-md border border-[var(--line)] bg-[var(--surface)] p-3 text-sm">
@@ -21,32 +23,33 @@ function SemanticChangeRow({ change }: { change: SemanticChange }) {
           </Pill>
           {risk ? (
             <Pill tone={(riskTone[risk] ?? "default") as never}>
-              {riskLabel[risk]}
+              {riskTone[risk] ? t(`risk.level.${risk}`) : risk}
             </Pill>
           ) : null}
         </div>
       </div>
       <div className="grid grid-cols-2 gap-2 text-xs text-[var(--muted)]">
-        <code className="semantic-value">{formatChangeValue(change.before ?? change.value ?? null)}</code>
-        <code className="semantic-value">{formatChangeValue(change.after ?? change.value ?? null)}</code>
+        <code className="semantic-value">{formatChangeValue(change.before ?? change.value ?? null, t("common.none"))}</code>
+        <code className="semantic-value">{formatChangeValue(change.after ?? change.value ?? null, t("common.none"))}</code>
       </div>
     </div>
   );
 }
 
 export function ComparisonView({ comparison }: { comparison: SkillComparison }) {
+  const { t } = useLocale();
   return (
     <div className="space-y-3">
       <Card className="overflow-hidden p-0 gap-0">
         <Card.Header>
           <div>
-            <Card.Title>Manifest changes</Card.Title>
+            <Card.Title>{t("comparison.manifestChanges")}</Card.Title>
             <Card.Subtitle>
               {comparison.from} → {comparison.to}
             </Card.Subtitle>
           </div>
           <Pill tone={comparison.semantic.length ? "warning" : "success"}>
-            {comparison.semantic.length} changes
+            {t("common.changes").replace("{count}", String(comparison.semantic.length))}
           </Pill>
         </Card.Header>
         <Card.Body>
@@ -57,7 +60,7 @@ export function ComparisonView({ comparison }: { comparison: SkillComparison }) 
               ))}
             </div>
           ) : (
-            <div className="text-sm text-[var(--muted)]">No manifest-level changes.</div>
+            <div className="text-sm text-[var(--muted)]">{t("comparison.noManifestChanges")}</div>
           )}
         </Card.Body>
       </Card>
@@ -65,11 +68,11 @@ export function ComparisonView({ comparison }: { comparison: SkillComparison }) 
       <Card className="overflow-hidden p-0 gap-0">
         <Card.Header>
           <div className="min-w-0">
-            <Card.Title>File patches</Card.Title>
+            <Card.Title>{t("comparison.filePatches")}</Card.Title>
             <Card.Subtitle className="truncate">{comparison.skillPath}</Card.Subtitle>
           </div>
           <Pill tone={comparison.files.length ? "default" : "success"}>
-            {comparison.files.length} files
+            {t("common.fileCount").replace("{count}", String(comparison.files.length))}
           </Pill>
         </Card.Header>
         <Card.Body>
@@ -83,12 +86,12 @@ export function ComparisonView({ comparison }: { comparison: SkillComparison }) 
                       {file.status}
                     </Pill>
                   </div>
-                  <pre className="diff-panel">{file.patch ?? "(no textual patch returned)"}</pre>
+                  <pre className="diff-panel">{file.patch ?? `(${t("common.noTextPatch")})`}</pre>
                 </div>
               ))}
             </div>
           ) : (
-            <div className="text-sm text-[var(--muted)]">No file patches were returned for this skill path.</div>
+            <div className="text-sm text-[var(--muted)]">{t("comparison.noFilePatches")}</div>
           )}
         </Card.Body>
       </Card>

@@ -1,8 +1,11 @@
-import { Button, Modal, Tooltip } from "@heroui/react";
+import { AlertDialog, Button, Tooltip } from "@heroui/react";
 import { useQuery } from "@tanstack/react-query";
 import {
   BellPlus,
+  ChevronDown,
+  ChevronRight,
   Download,
+  Files,
   GitPullRequestArrow,
   Maximize2,
   Minimize2,
@@ -23,7 +26,7 @@ import {
 import { useLocale } from "../hooks/useLocale";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { getFileContentFromCache, putFileContentInCache } from "../lib/workspaceCache";
-import { effectiveRisk, permissionSummary, riskLabel, riskRequiresConfirmation, riskTone } from "../utils/risk";
+import { effectiveRisk, permissionSummary, riskRequiresConfirmation, riskTone } from "../utils/risk";
 import { CodeEditor } from "./CodeEditor";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { Pill } from "./Pill";
@@ -31,11 +34,19 @@ import { ResultBlock } from "./ResultBlock";
 import { SegmentedTabs } from "./SegmentedTabs";
 import { SkillComments } from "./SkillComments";
 import { SkillCommitsTimeline } from "./SkillCommitsTimeline";
+import { SkillFileTree } from "./SkillFileTree";
 import { SkillRiskPanel } from "./SkillRiskPanel";
 
 type SkillTab = "source" | "metadata" | "history" | "comments" | "risk";
 
 type FileViewMode = "editor" | "markdown-preview" | "image" | "pdf" | "binary";
+
+export type SkillPublishDraft = {
+  filePath: string;
+  fileName: string;
+  before: string;
+  after: string;
+};
 
 function detectFileViewMode(fileName: string): FileViewMode {
   const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
@@ -77,15 +88,22 @@ export function SkillDetail({
   selectedRef,
   setSelectedRef,
   selectedFile,
+  onSelectFile,
   targets,
   setTargets,
   workspaceRef,
   onSubscribeClick,
   onInstall,
+  onInstallClick,
   onPublish,
   onPublishClick,
+  onPublishDraftChange,
+  canEditSource = true,
   onSyncClick,
   onRefresh,
+  hasLocalChanges = false,
+  publishResetKey = 0,
+  publishResetValue,
   installPending,
   publishPending,
   installResult,
@@ -99,15 +117,22 @@ export function SkillDetail({
   selectedRef: string | undefined;
   setSelectedRef: (ref: string | undefined) => void;
   selectedFile: string | null;
+  onSelectFile: (file: string | null) => void;
   targets: string[];
   setTargets: (targets: string[]) => void;
   workspaceRef: string;
   onSubscribeClick: () => void;
   onInstall: (confirmed?: boolean) => void;
+  onInstallClick?: () => void;
   onPublish: () => void;
   onPublishClick?: () => void;
+  onPublishDraftChange?: (draft: SkillPublishDraft | null) => void;
+  canEditSource?: boolean;
   onSyncClick?: () => void;
   onRefresh?: () => void;
+  hasLocalChanges?: boolean;
+  publishResetKey?: number;
+  publishResetValue?: string | null;
   installPending: boolean;
   publishPending: boolean;
   installResult: Awaited<ReturnType<typeof installSkill>> | undefined;
@@ -120,15 +145,20 @@ export function SkillDetail({
   const [pendingRiskAction, setPendingRiskAction] = useState<"install" | "publish" | null>(null);
   const [tab, setTab] = useLocalStorage<SkillTab>(`ws-ui:${workspaceRef}:tab`, "source");
   const [fullscreen, setFullscreen] = useState(false);
+  const [fileTreeOpen, setFileTreeOpen] = useState(false);
+  const [editorResetVersion, setEditorResetVersion] = useState(0);
+  const [editorBaseline, setEditorBaseline] = useState<string | null>(null);
 
   // Reset internal state when skill changes
   useEffect(() => {
     setPendingRiskAction(null);
     setFullscreen(false);
+    setFileTreeOpen(false);
   }, [asset.manifest.id]);
 
   const riskLevel = effectiveRisk(activeAsset.manifest);
   const requiresConfirmation = riskRequiresConfirmation(riskLevel);
+  const readOnlySource = !canEditSource;
 
   // Fetch selected file content (with filesystem persistent cache)
   const fileContent = useQuery({
@@ -163,6 +193,7 @@ export function SkillDetail({
   const currentFileName = selectedFile
     ? selectedFile.split("/").pop() ?? "file"
     : "SKILL.md";
+  const currentFilePath = selectedFile ?? `${activeAsset.path}/SKILL.md`;
   const sourceContent = selectedFile
     ? fileContent.data?.content ?? ""
     : skillMarkdown ?? "";
@@ -182,7 +213,16 @@ export function SkillDetail({
   useEffect(() => {
     setEditedContent(null);
     setMarkdownDirty(false);
+    setEditorBaseline(null);
+    setFileTreeOpen(false);
   }, [asset.manifest.id, selectedFile]);
+
+  useEffect(() => {
+    if (!publishResetKey) return;
+    setEditedContent(publishResetValue ?? null);
+    setMarkdownDirty(false);
+    setEditorBaseline(publishResetValue ?? null);
+  }, [publishResetKey, publishResetValue]);
 
   // Dirty depends on the editor: markdown uses the editor's own baseline signal
   // (MDXEditor normalizes content, so a text compare gives false positives);
@@ -191,12 +231,45 @@ export function SkillDetail({
     viewMode === "markdown-preview"
       ? markdownDirty
       : editedContent !== null && editedContent !== sourceContent;
+  const hasPublishUpdate = hasUnpublishedChanges || hasLocalChanges;
+  const publishDraftBaseline =
+    viewMode === "markdown-preview" ? editorBaseline ?? sourceContent : sourceContent;
+
+  useEffect(() => {
+    if (!onPublishDraftChange) return;
+    if (readOnlySource || !hasUnpublishedChanges) {
+      onPublishDraftChange(null);
+      return;
+    }
+    onPublishDraftChange({
+      filePath: currentFilePath,
+      fileName: currentFileName,
+      before: publishDraftBaseline,
+      after: editedContent ?? sourceContent,
+    });
+  }, [
+    currentFileName,
+    currentFilePath,
+    editedContent,
+    hasUnpublishedChanges,
+    onPublishDraftChange,
+    publishDraftBaseline,
+    readOnlySource,
+    sourceContent,
+  ]);
+
+  useEffect(() => {
+    if (!readOnlySource) return;
+    setEditedContent(null);
+    setMarkdownDirty(false);
+  }, [readOnlySource]);
 
   // Revert handler: reset editor content to original
   const handleRevert = useCallback(() => {
     setEditedContent(null);
     setMarkdownDirty(false);
     setShowRevertConfirm(false);
+    setEditorResetVersion((value) => value + 1);
   }, []);
 
   const startRiskAction = (action: "install" | "publish") => {
@@ -240,12 +313,17 @@ export function SkillDetail({
         </div>
         <div className="min-h-0 flex-1">
           <SourceViewer
-            content={editedContent ?? sourceContent}
+            content={viewMode === "markdown-preview" ? sourceContent : editedContent ?? sourceContent}
             fileName={currentFileName}
             viewMode={viewMode}
             loading={sourceLoading}
             onChange={setEditedContent}
+            onBaselineChange={setEditorBaseline}
             onDirtyChange={setMarkdownDirty}
+            readOnly={readOnlySource}
+            resetKey={editorResetVersion}
+            baselineResetKey={publishResetKey}
+            baselineResetValue={publishResetValue}
           />
         </div>
       </div>
@@ -264,7 +342,7 @@ export function SkillDetail({
               </h2>
               <Pill mono>v{activeAsset.manifest.version}</Pill>
               <Pill tone={riskTone[riskLevel] === "default" ? "default" : (riskTone[riskLevel] as never)}>
-                {riskLabel[riskLevel]}
+                {t(`risk.level.${riskLevel}`)}
               </Pill>
               {onRefresh && (
                 <Tooltip delay={0}>
@@ -296,7 +374,13 @@ export function SkillDetail({
               <Tooltip.Content>{t("skill.subscribe")}</Tooltip.Content>
             </Tooltip>
             <Tooltip delay={0}>
-              <Button isIconOnly size="sm" variant="secondary" onPress={() => startRiskAction("install")} isPending={installPending}>
+              <Button
+                isIconOnly
+                size="sm"
+                variant="secondary"
+                onPress={onInstallClick ?? (() => startRiskAction("install"))}
+                isPending={installPending}
+              >
                 <Download size={14} />
               </Button>
               <Tooltip.Content>{t("skill.install")}</Tooltip.Content>
@@ -320,7 +404,7 @@ export function SkillDetail({
               <div className="flex min-w-0 items-center gap-2 text-[12px]">
                 <ShieldAlert className="shrink-0 text-[var(--warning)]" size={13} />
                 <span className="text-[var(--warning)]">
-                  {t("common.confirm")} {pendingRiskAction === "install" ? t("skill.riskConfirm.install") : t("skill.riskConfirm.publish")} · {riskLabel[riskLevel].toLowerCase()} risk · {permissionSummary(activeAsset.manifest)}
+                  {t("common.confirm")} {pendingRiskAction === "install" ? t("skill.riskConfirm.install") : t("skill.riskConfirm.publish")} · {t("sync.riskLabel").replace("{risk}", t(`risk.level.${riskLevel}`))} · {permissionSummary(activeAsset.manifest, t)}
                 </span>
               </div>
               <div className="flex shrink-0 gap-1.5">
@@ -354,15 +438,21 @@ export function SkillDetail({
 
         <div className="scroll-area max-h-full">
           {tab === "source" ? (
-            <div className="flex h-full min-h-[400px] flex-col">
+            <div className="relative flex h-full min-h-[400px] flex-col">
               {/* File path bar + actions */}
               <div className="flex items-center justify-between border-b border-[var(--line)] bg-[var(--bg-soft)] px-5 py-1.5">
-                <span className="truncate text-[11px] font-mono text-[var(--fg-muted)]">
-                  {selectedFile ?? `${activeAsset.path}/SKILL.md`}
-                </span>
+                <button
+                  type="button"
+                  className="flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[11px] font-mono text-[var(--fg-muted)] hover:bg-[var(--bg-active)] hover:text-[var(--fg)]"
+                  onClick={() => setFileTreeOpen((value) => !value)}
+                >
+                  {fileTreeOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  <Files size={13} className="shrink-0" />
+                  <span className="truncate">{selectedFile ?? `${activeAsset.path}/SKILL.md`}</span>
+                </button>
                 <div className="flex items-center gap-1.5">
                   {/* Revert button — left of publish */}
-                  {hasUnpublishedChanges && (
+                  {!readOnlySource && hasUnpublishedChanges && (
                     <Tooltip delay={0}>
                       <Button
                         isIconOnly
@@ -386,11 +476,13 @@ export function SkillDetail({
                         onPress={onPublishClick}
                       >
                         <GitPullRequestArrow size={15} />
-                        {hasUnpublishedChanges && (
-                          <span className="absolute -right-0.5 -top-0.5 size-2.5 rounded-full bg-[var(--danger)]" />
+                        {hasPublishUpdate && (
+                          <span className="absolute -right-0.5 -top-0.5 size-2.5 rounded-full border border-[var(--bg-elevated)] bg-[var(--warning)]" />
                         )}
                       </Button>
-                      <Tooltip.Content>{t("skill.publish")}</Tooltip.Content>
+                      <Tooltip.Content>
+                        {hasPublishUpdate ? t("skill.publishHasUpdates") : t("skill.publish")}
+                      </Tooltip.Content>
                     </Tooltip>
                   )}
                   <Tooltip delay={0}>
@@ -411,46 +503,67 @@ export function SkillDetail({
               {/* Content area */}
               <div className="min-h-0 flex-1">
                 <SourceViewer
-                  content={editedContent ?? sourceContent}
+                  content={viewMode === "markdown-preview" ? sourceContent : editedContent ?? sourceContent}
                   fileName={currentFileName}
                   viewMode={viewMode}
                   loading={sourceLoading}
                   onChange={setEditedContent}
+                  onBaselineChange={setEditorBaseline}
                   onDirtyChange={setMarkdownDirty}
+                  resetKey={editorResetVersion}
+                  baselineResetKey={publishResetKey}
+                  baselineResetValue={publishResetValue}
+                  readOnly={readOnlySource}
                 />
               </div>
+              {fileTreeOpen ? (
+                <div className="absolute right-4 top-12 z-20 max-h-[min(520px,calc(100%-64px))] w-[340px] overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--bg-elevated)] shadow-2xl">
+                  <div className="border-b border-[var(--line)] px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--fg-muted)]">
+                    {t("skill.files")}
+                  </div>
+                  <div className="max-h-[min(470px,calc(100vh-260px))] overflow-y-auto py-1">
+                    <SkillFileTree
+                      workspace={workspaceRef}
+                      skillPath={activeAsset.path}
+                      refName={selectedRef}
+                      selectedFile={selectedFile}
+                      onSelectFile={(file) => {
+                        onSelectFile(file);
+                        setFileTreeOpen(false);
+                      }}
+                    />
+                  </div>
+                </div>
+              ) : null}
             </div>
           ) : null}
 
-          {/* Revert confirmation modal */}
-          <Modal isOpen={showRevertConfirm} onOpenChange={setShowRevertConfirm}>
-            <Modal.Backdrop>
-              <Modal.Container size="sm">
-                <Modal.Dialog className="rounded-[12px] bg-[var(--bg-elevated)] outline-none w-[min(420px,90vw)]">
-                  <Modal.Header className="border-b border-[var(--line)] px-5 py-4">
-                    <Modal.Heading className="text-[15px] font-semibold tracking-tight flex items-center gap-2">
-                      <RotateCcw size={16} className="text-[var(--danger)]" />
-                      {t("skill.revert.confirm.title")}
-                    </Modal.Heading>
-                  </Modal.Header>
-                  <Modal.Body className="px-5 py-4">
-                    <p className="text-[13px] text-[var(--fg-muted)]">
-                      {t("skill.revert.confirm.desc")}
-                    </p>
-                  </Modal.Body>
-                  <div className="flex justify-end gap-2 border-t border-[var(--line)] px-5 py-3">
-                    <Button variant="outline" onPress={() => setShowRevertConfirm(false)}>
-                      {t("common.cancel")}
-                    </Button>
-                    <Button variant="danger-soft" onPress={handleRevert}>
-                      <RotateCcw size={14} />
-                      {t("skill.revert.confirm.btn")}
-                    </Button>
-                  </div>
-                </Modal.Dialog>
-              </Modal.Container>
-            </Modal.Backdrop>
-          </Modal>
+          {/* Revert confirmation */}
+          <AlertDialog.Backdrop isOpen={showRevertConfirm} onOpenChange={setShowRevertConfirm}>
+            <AlertDialog.Container size="sm">
+              <AlertDialog.Dialog className="sm:max-w-[420px]">
+                <AlertDialog.CloseTrigger />
+                <AlertDialog.Header>
+                  <AlertDialog.Icon status="danger">
+                    <RotateCcw className="size-5" />
+                  </AlertDialog.Icon>
+                  <AlertDialog.Heading>{t("skill.revert.confirm.title")}</AlertDialog.Heading>
+                </AlertDialog.Header>
+                <AlertDialog.Body>
+                  <p>{t("skill.revert.confirm.desc")}</p>
+                </AlertDialog.Body>
+                <AlertDialog.Footer>
+                  <Button slot="close" variant="tertiary">
+                    {t("common.cancel")}
+                  </Button>
+                  <Button slot="close" variant="danger-soft" onPress={handleRevert}>
+                    <RotateCcw size={14} />
+                    {t("skill.revert.confirm.btn")}
+                  </Button>
+                </AlertDialog.Footer>
+              </AlertDialog.Dialog>
+            </AlertDialog.Container>
+          </AlertDialog.Backdrop>
 
           {tab === "metadata" ? (
             <div className="px-5 py-4">
@@ -522,14 +635,24 @@ function SourceViewer({
   viewMode,
   loading,
   onChange,
+  onBaselineChange,
   onDirtyChange,
+  readOnly = false,
+  resetKey = 0,
+  baselineResetKey = 0,
+  baselineResetValue,
 }: {
   content: string;
   fileName: string;
   viewMode: FileViewMode;
   loading: boolean;
   onChange?: (value: string) => void;
+  onBaselineChange?: (value: string) => void;
   onDirtyChange?: (dirty: boolean) => void;
+  readOnly?: boolean;
+  resetKey?: number;
+  baselineResetKey?: number;
+  baselineResetValue?: string | null;
 }) {
   const { t } = useLocale();
   if (loading) {
@@ -542,9 +665,24 @@ function SourceViewer({
 
   switch (viewMode) {
     case "markdown-preview":
+      if (readOnly) {
+        return (
+          <pre className="markdown-preview h-full max-h-none whitespace-pre-wrap font-sans text-[13px] leading-6">
+            {content}
+          </pre>
+        );
+      }
       return (
         <div className="h-full">
-          <MarkdownEditor initialValue={content} onChange={onChange} onDirtyChange={onDirtyChange} />
+          <MarkdownEditor
+            key={resetKey}
+            initialValue={content}
+            onChange={onChange}
+            onBaselineChange={onBaselineChange}
+            baselineResetKey={baselineResetKey}
+            baselineResetValue={baselineResetValue}
+            onDirtyChange={onDirtyChange}
+          />
         </div>
       );
 
@@ -577,7 +715,7 @@ function SourceViewer({
     default:
       return (
         <div className="h-full">
-          <CodeEditor value={content} fileName={fileName} onChange={onChange} />
+          <CodeEditor value={content} fileName={fileName} readOnly={readOnly} onChange={onChange} />
         </div>
       );
   }

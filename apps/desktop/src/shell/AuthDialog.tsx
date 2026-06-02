@@ -137,7 +137,7 @@ export function AuthDialog({
                       <div className="mt-3 rounded-md border border-[var(--line)] p-3">
                         <div className="grid grid-cols-[1fr_auto] gap-2">
                           <Input
-                            aria-label="GitHub token"
+                            aria-label={t("auth.githubTokenAria")}
                             name="githubToken"
                             type="password"
                             value={githubToken}

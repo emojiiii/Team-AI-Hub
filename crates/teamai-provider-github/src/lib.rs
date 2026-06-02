@@ -109,6 +109,39 @@ impl GitHubProvider {
         map_response(path, "PUT", response).await
     }
 
+    async fn patch_json<B: Serialize, T: for<'de> Deserialize<'de>>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T> {
+        let url = format!("{}{}", self.api_base, path);
+        tracing::debug!(target: "teamai-github", method = "PATCH", path);
+        let response = self
+            .client
+            .patch(url)
+            .json(body)
+            .send()
+            .await
+            .map_err(|err| ProviderError::NetworkError {
+                cause: err.to_string(),
+            })?;
+        map_response(path, "PATCH", response).await
+    }
+
+    async fn delete_empty(&self, path: &str) -> Result<()> {
+        let url = format!("{}{}", self.api_base, path);
+        tracing::debug!(target: "teamai-github", method = "DELETE", path);
+        let response =
+            self.client
+                .delete(url)
+                .send()
+                .await
+                .map_err(|err| ProviderError::NetworkError {
+                    cause: err.to_string(),
+                })?;
+        map_empty_response(path, "DELETE", response).await
+    }
+
     pub async fn current_user(&self) -> Result<GitHubUser> {
         self.get_json("/user").await
     }
@@ -367,6 +400,25 @@ impl GitHubProvider {
         let mut uploaded = Vec::new();
         for file in input.files {
             validate_repo_path(&file.path)?;
+            let existing = match self
+                .read_file(
+                    reference,
+                    &GitRef::Branch(input.branch_name.clone()),
+                    &file.path,
+                )
+                .await
+            {
+                Ok(blob) => Some(blob),
+                Err(ProviderError::NotFound { .. }) => None,
+                Err(err) => return Err(err),
+            };
+            if existing
+                .as_ref()
+                .map(|blob| blob.bytes == file.bytes)
+                .unwrap_or(false)
+            {
+                continue;
+            }
             let content = base64::engine::general_purpose::STANDARD.encode(&file.bytes);
             let response: PutContentResponse = self
                 .put_json(
@@ -378,7 +430,7 @@ impl GitHubProvider {
                         message: input.commit_message.clone(),
                         content,
                         branch: input.branch_name.clone(),
-                        sha: None,
+                        sha: existing.map(|blob| blob.sha),
                     },
                 )
                 .await?;
@@ -488,6 +540,71 @@ impl GitHubProvider {
         );
         let raw: Vec<PullRequestListItemResponse> = self.get_json(&path).await?;
         Ok(raw.into_iter().map(PullRequestSummary::from).collect())
+    }
+
+    pub async fn list_pull_request_files(
+        &self,
+        reference: &WorkspaceRef,
+        number: u64,
+    ) -> Result<Vec<ChangedFile>> {
+        let raw: Vec<PullRequestFileResponse> = self
+            .get_json(&format!(
+                "/repos/{}/{}/pulls/{number}/files?per_page=100",
+                reference.owner, reference.repo
+            ))
+            .await?;
+        Ok(raw
+            .into_iter()
+            .map(|file| ChangedFile {
+                filename: file.filename,
+                status: file.status,
+                patch: file.patch,
+            })
+            .collect())
+    }
+
+    pub async fn close_pull_request(
+        &self,
+        reference: &WorkspaceRef,
+        number: u64,
+    ) -> Result<PullRequestSummary> {
+        let pr: PullRequestListItemResponse = self
+            .patch_json(
+                &format!(
+                    "/repos/{}/{}/pulls/{number}",
+                    reference.owner, reference.repo
+                ),
+                &ClosePullRequestRequest { state: "closed" },
+            )
+            .await?;
+        Ok(pr.into())
+    }
+
+    pub async fn add_pull_request_comment(
+        &self,
+        reference: &WorkspaceRef,
+        number: u64,
+        body: &str,
+    ) -> Result<IssueComment> {
+        self.post_json(
+            &format!(
+                "/repos/{}/{}/issues/{number}/comments",
+                reference.owner, reference.repo
+            ),
+            &IssueCommentRequest { body },
+        )
+        .await
+    }
+
+    pub async fn delete_branch(&self, reference: &WorkspaceRef, branch: &str) -> Result<()> {
+        validate_branch_ref(branch)?;
+        self.delete_empty(&format!(
+            "/repos/{}/{}/git/refs/heads/{}",
+            reference.owner,
+            reference.repo,
+            urlencoding_simple(branch)
+        ))
+        .await
     }
 
     /// List commits that touched a specific path (per-skill timeline).
@@ -710,9 +827,19 @@ pub struct PullRequestSummary {
     pub author: Option<String>,
     pub head_ref: String,
     pub base_ref: String,
+    pub head_repo: Option<String>,
+    pub base_repo: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub body: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueComment {
+    pub id: u64,
+    pub html_url: String,
+    pub body: Option<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -738,6 +865,31 @@ struct PullRequestListItemResponse {
 struct PullRequestRefResponse {
     #[serde(default, rename = "ref")]
     ref_name: String,
+    #[serde(default)]
+    repo: Option<PullRequestRefRepoResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestRefRepoResponse {
+    full_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestFileResponse {
+    filename: String,
+    status: String,
+    #[serde(default)]
+    patch: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ClosePullRequestRequest {
+    state: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct IssueCommentRequest<'a> {
+    body: &'a str,
 }
 
 impl From<PullRequestListItemResponse> for PullRequestSummary {
@@ -753,6 +905,8 @@ impl From<PullRequestListItemResponse> for PullRequestSummary {
             author: value.user.map(|user| user.login),
             head_ref: value.head.ref_name,
             base_ref: value.base.ref_name,
+            head_repo: value.head.repo.map(|repo| repo.full_name),
+            base_repo: value.base.repo.map(|repo| repo.full_name),
             created_at: value.created_at,
             updated_at: value.updated_at,
             body: value.body,
@@ -1338,6 +1492,28 @@ async fn map_response<T: for<'de> Deserialize<'de>>(
     ))
 }
 
+async fn map_empty_response(path: &str, method: &str, response: reqwest::Response) -> Result<()> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(());
+    }
+
+    let message = response.text().await.unwrap_or_else(|_| status.to_string());
+    let snippet: String = message.chars().take(200).collect();
+    tracing::warn!(
+        target: "teamai-github",
+        method,
+        path,
+        status = status.as_u16(),
+        body = %snippet,
+        "non-success response"
+    );
+    Err(provider_error_from_status(
+        status,
+        format!("{method} {path} ({status}): {snippet}"),
+    ))
+}
+
 fn provider_error_from_status(status: reqwest::StatusCode, message: String) -> ProviderError {
     match status.as_u16() {
         401 => ProviderError::Unauthorized {
@@ -1445,6 +1621,23 @@ fn validate_repo_path(path: &str) -> Result<()> {
                 path.display()
             )));
         }
+    }
+    Ok(())
+}
+
+fn validate_branch_ref(branch: &str) -> Result<()> {
+    if branch.trim().is_empty()
+        || branch.starts_with('/')
+        || branch.ends_with('/')
+        || branch.contains("..")
+        || branch.contains('\\')
+        || branch.contains(' ')
+        || branch.contains("refs/")
+    {
+        return Err(ProviderError::Conflict {
+            resource: "branch".to_owned(),
+            hint: Some(format!("unsafe branch ref: {branch}")),
+        });
     }
     Ok(())
 }

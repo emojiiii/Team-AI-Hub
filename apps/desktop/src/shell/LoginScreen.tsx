@@ -91,7 +91,7 @@ export function LoginScreen({
           <div className="mt-2 rounded-[10px] border border-[var(--line)] bg-[var(--bg-elevated)] p-3">
             <div className="grid grid-cols-[1fr_auto] gap-2">
               <Input
-                aria-label="GitHub token"
+                aria-label={t("auth.githubTokenAria")}
                 name="githubToken"
                 type="password"
                 value={githubToken}

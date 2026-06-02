@@ -10,7 +10,6 @@ import {
   previewPublishFromWorkspace,
   publishSkillToWorkspace,
 } from "../lib/teamai";
-import { riskLabel } from "../utils/risk";
 import { openExternalUrl } from "../utils/format";
 import { workspaceColor, workspaceInitials } from "../utils/workspace-visual";
 import { Pill, type PillTone } from "./Pill";
@@ -186,14 +185,14 @@ export function SyncSkillModal({
                   {t("sync.skillIdOptional")}
                 </div>
                 <Input
-                  aria-label="Rename skill"
+                  aria-label={t("sync.renameAria")}
                   value={renameTo}
                   onChange={(event) => setRenameTo(event.target.value)}
                   placeholder={skillId}
                   variant="secondary"
                 />
                 <div className="mt-1 text-[11px] text-[var(--fg-muted)]">
-                  Leave empty to keep <span className="font-mono">{skillId}</span>.
+                  {t("sync.renameKeep").replace("{id}", skillId)}
                 </div>
               </section>
 
@@ -204,14 +203,16 @@ export function SyncSkillModal({
                 </div>
                 {previewMutation.isPending ? (
                   <div className="rounded-md border border-[var(--line)] px-3 py-3 text-[12.5px] text-[var(--fg-muted)]">
-                    Fetching skill files from {sourceWorkspace}…
+                    {t("sync.fetchingFiles").replace("{workspace}", sourceWorkspace)}
                   </div>
                 ) : preview && policy ? (
                   <div className="rounded-md border border-[var(--line)] bg-[var(--bg-soft)]">
                     <div className="flex items-center justify-between gap-3 border-b border-[var(--line)] px-3 py-2">
                       <div className="flex items-center gap-2">
                         <ShieldAlert size={14} className="text-[var(--warning)]" />
-                        <span className="text-[12.5px] font-medium">{riskLabel[policy.risk_level]} risk</span>
+                        <span className="text-[12.5px] font-medium">
+                          {t("sync.riskLabel").replace("{risk}", t(`risk.level.${policy.risk_level}`))}
+                        </span>
                       </div>
                       <Pill tone={decisionTone[policy.decision] ?? "default"}>
                         {policy.decision.replaceAll("_", " ")}
@@ -219,18 +220,18 @@ export function SyncSkillModal({
                     </div>
                     <div className="grid grid-cols-2 gap-3 px-3 py-3 text-[12px]">
                       <div>
-                        <div className="text-[10.5px] uppercase tracking-wider text-[var(--fg-muted)]">Files</div>
+                        <div className="text-[10.5px] uppercase tracking-wider text-[var(--fg-muted)]">{t("common.files")}</div>
                         <div className="mt-0.5 font-medium">{preview.package.file_count}</div>
                       </div>
                       <div>
-                        <div className="text-[10.5px] uppercase tracking-wider text-[var(--fg-muted)]">Size</div>
+                        <div className="text-[10.5px] uppercase tracking-wider text-[var(--fg-muted)]">{t("common.size")}</div>
                         <div className="mt-0.5 font-medium">
                           {(preview.package.total_bytes / 1024).toFixed(1)} KB
                         </div>
                       </div>
                       {policy.reasons.length ? (
                         <div className="col-span-2">
-                          <div className="text-[10.5px] uppercase tracking-wider text-[var(--fg-muted)]">Reasons</div>
+                          <div className="text-[10.5px] uppercase tracking-wider text-[var(--fg-muted)]">{t("common.reasons")}</div>
                           <ul className="mt-1 list-disc pl-4 text-[11.5px] text-[var(--fg-secondary)]">
                             {policy.reasons.map((reason) => (
                               <li key={reason}>{reason}</li>
@@ -241,10 +242,10 @@ export function SyncSkillModal({
                     </div>
                     {preview.request ? (
                       <div className="border-t border-[var(--line)] px-3 py-2.5">
-                        <div className="text-[10.5px] uppercase tracking-wider text-[var(--fg-muted)]">PR draft</div>
+                        <div className="text-[10.5px] uppercase tracking-wider text-[var(--fg-muted)]">{t("common.prDraft")}</div>
                         <div className="mt-0.5 truncate text-[12.5px] font-medium">{preview.request.title}</div>
                         <div className="truncate text-[11.5px] font-mono text-[var(--fg-muted)]">
-                          branch: {preview.request.branch_name}
+                          {t("common.branch")}: {preview.request.branch_name}
                         </div>
                       </div>
                     ) : null}
@@ -255,7 +256,7 @@ export function SyncSkillModal({
                   </div>
                 ) : (
                   <div className="rounded-md border border-dashed border-[var(--line)] px-3 py-4 text-center text-[12px] text-[var(--fg-muted)]">
-                    Pick a workspace to see a preview.
+                    {t("sync.pickWorkspacePreview")}
                   </div>
                 )}
               </section>
@@ -268,10 +269,17 @@ export function SyncSkillModal({
 
               {result ? (
                 <div className="rounded-md border border-[var(--success)] bg-[var(--success-soft)] px-3 py-2.5 text-[12.5px] text-[var(--success)]">
-                  <div className="font-semibold">{t("sync.prOpened")}</div>
+                  <div className="font-semibold">
+                    {result.autoMerge?.merged ? t("sync.prAutoMerged") : t("sync.prOpened")}
+                  </div>
                   <div className="mt-0.5 truncate text-[11.5px] opacity-80">
                     #{result.pullRequest.number} · {result.pullRequest.title}
                   </div>
+                  {result.autoMerge?.error ? (
+                    <div className="mt-1 rounded border border-[var(--warning)] bg-[var(--warning-soft)] px-2 py-1 text-[11.5px] text-[var(--warning)]">
+                      {t("sync.autoMergeNotice").replace("{error}", result.autoMerge.error)}
+                    </div>
+                  ) : null}
                   <button
                     type="button"
                     onClick={() => void openExternalUrl(result.pullRequest.htmlUrl)}

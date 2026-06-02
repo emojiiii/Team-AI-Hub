@@ -28,20 +28,6 @@ export function CliPage({
     <section className="scroll-area min-h-0 flex-1 px-6 py-6">
       <div className="mx-auto flex max-w-4xl flex-col gap-5">
         <Card className="p-5">
-          <div className="mb-3 flex items-start justify-between gap-3">
-            <div>
-              <Card.Title>{t("cli.rustCli")}</Card.Title>
-              <Card.Subtitle>{t("cli.rustCliDesc")}</Card.Subtitle>
-            </div>
-            <Pill tone="success">native</Pill>
-          </div>
-          <pre className="code-panel compact">teamai --help{"\n"}teamai sync{"\n"}teamai status --target claude-code --target cursor --target codex</pre>
-          <p className="mt-3 text-[12px] text-[var(--muted)]">
-            {t("cli.cliHint")}
-          </p>
-        </Card>
-
-        <Card className="p-5">
           <div className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
             <div className="min-w-0">
               <Card.Title>{t("cli.diagnostics")}</Card.Title>

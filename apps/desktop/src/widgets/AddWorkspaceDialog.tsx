@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { Workspace } from "../lib/teamai";
 import { workspaceColor, workspaceInitials } from "../utils/workspace-visual";
 import { Pill } from "../widgets/Pill";
+import { useLocale } from "../hooks/useLocale";
 
 export function AddWorkspaceDialog({
   open,
@@ -34,6 +35,7 @@ export function AddWorkspaceDialog({
   onAddManual: () => void;
   manualPending: boolean;
 }) {
+  const { t } = useLocale();
   const [tab, setTab] = useState<"github" | "manual">("github");
 
   const filtered = useMemo(() => {
@@ -54,19 +56,19 @@ export function AddWorkspaceDialog({
         <Modal.Container size="md">
           <Modal.Dialog className="rounded-[12px] bg-[var(--bg-elevated)] outline-none">
             <Modal.Header className="border-b border-[var(--line)] px-5 py-4">
-              <Modal.Heading className="text-[15px] font-semibold tracking-tight">Add a workspace</Modal.Heading>
+              <Modal.Heading className="text-[15px] font-semibold tracking-tight">{t("workspace.add.title")}</Modal.Heading>
               <div className="mt-1 text-[12px] text-[var(--fg-muted)]">
-                A workspace is just a Git repository. Pick one you have access to.
+                {t("workspace.add.desc")}
               </div>
             </Modal.Header>
 
             <div className="border-b border-[var(--line)] px-5">
               <div className="flex gap-4">
                 <TabButton active={tab === "github"} onClick={() => setTab("github")}>
-                  From GitHub
+                  {t("workspace.add.fromGithub")}
                 </TabButton>
                 <TabButton active={tab === "manual"} onClick={() => setTab("manual")}>
-                  Manual / Local
+                  {t("workspace.add.manual")}
                 </TabButton>
               </div>
             </div>
@@ -81,13 +83,13 @@ export function AddWorkspaceDialog({
                         autoFocus
                         value={query}
                         onChange={(event) => setQuery(event.target.value)}
-                        placeholder="Search your GitHub repos…"
+                        placeholder={t("workspace.add.searchPlaceholder")}
                         className="w-full rounded-md border border-[var(--line)] bg-[var(--bg-elevated)] py-2 pl-8 pr-3 text-[13px] outline-none focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand-soft)]"
                       />
                     </div>
                     <div className="max-h-[320px] overflow-y-auto rounded-md border border-[var(--line)]">
                       {remoteFetching && !remote.length ? (
-                        <div className="px-3 py-6 text-center text-[12px] text-[var(--fg-muted)]">Loading…</div>
+                        <div className="px-3 py-6 text-center text-[12px] text-[var(--fg-muted)]">{t("common.loading")}</div>
                       ) : filtered.length ? (
                         filtered.map((ws) => (
                           <RemoteRow
@@ -99,43 +101,42 @@ export function AddWorkspaceDialog({
                         ))
                       ) : (
                         <div className="px-3 py-6 text-center text-[12px] text-[var(--fg-muted)]">
-                          No matching repos.
+                          {t("workspace.add.noMatches")}
                         </div>
                       )}
                     </div>
                   </div>
                 ) : (
                   <div className="rounded-md border border-dashed border-[var(--line)] px-4 py-6 text-center text-[12.5px] text-[var(--fg-muted)]">
-                    Sign in to GitHub from the account menu to browse repos.
+                    {t("workspace.add.signInRequired")}
                   </div>
                 )
               ) : (
                 <div className="space-y-3">
                   <div>
-                    <div className="text-[11.5px] font-medium text-[var(--fg)]">Repo full name or local path</div>
+                    <div className="text-[11.5px] font-medium text-[var(--fg)]">{t("workspace.add.manualLabel")}</div>
                     <div className="mt-0.5 text-[11px] text-[var(--fg-muted)]">
-                      e.g. <code className="font-mono">acme/team-skills</code> or{" "}
-                      <code className="font-mono">~/code/skills</code> or <code className="font-mono">demo</code>
+                      {t("workspace.add.manualHint")}
                     </div>
                   </div>
                   <div className="grid grid-cols-[1fr_auto] gap-2">
                     <Input
-                      aria-label="Workspace path"
+                      aria-label={t("workspace.add.pathAria")}
                       value={manualPath}
                       onChange={(event) => setManualPath(event.target.value)}
-                      placeholder="acme/team-skills, ~/code/skills, or demo"
+                      placeholder={t("workspace.add.pathPlaceholder")}
                       variant="secondary"
                     />
                     <Button onPress={onAddManual} isDisabled={!manualPath.trim() || manualPending}>
                       {manualPending ? (
                         <>
                           <Spinner size="sm" />
-                          Adding…
+                          {t("common.adding")}
                         </>
                       ) : (
                         <>
                           <Plus size={14} />
-                          Add
+                          {t("common.add")}
                         </>
                       )}
                     </Button>
@@ -146,7 +147,7 @@ export function AddWorkspaceDialog({
 
             <div className="flex justify-end gap-2 border-t border-[var(--line)] px-5 py-3">
               <Button variant="outline" onPress={() => onOpenChange(false)}>
-                Close
+                {t("common.close")}
               </Button>
             </div>
           </Modal.Dialog>
@@ -188,6 +189,7 @@ function RemoteRow({
   adding: boolean;
   onAdd: () => void;
 }) {
+  const { t } = useLocale();
   const color = workspaceColor(workspace.full_name);
   const initials = workspaceInitials(workspace);
   return (
@@ -204,17 +206,17 @@ function RemoteRow({
           {workspace.visibility} · {workspace.permission} · {workspace.default_branch}
         </div>
       </div>
-      {workspace.permission === "read" ? <Pill tone="warning">read-only</Pill> : null}
+      {workspace.permission === "read" ? <Pill tone="warning">{t("common.readOnly")}</Pill> : null}
       <Button size="sm" variant="secondary" onPress={onAdd} isDisabled={adding}>
         {adding ? (
           <>
             <Spinner size="sm" />
-            Adding…
+            {t("common.adding")}
           </>
         ) : (
           <>
             <Plus size={13} />
-            Add
+            {t("common.add")}
           </>
         )}
       </Button>

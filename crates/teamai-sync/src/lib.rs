@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use teamai_core::{AppPaths, RiskLevel, UpdatePolicy, WorkspaceRef};
 use teamai_installer::{InstallOptions, InstallReport, TargetRoot};
 use teamai_manifest::{effective_risk, SkillAsset};
-use teamai_provider::{GitRef, PageOpts, Provider, ProviderError, WebhookConfig, Workspace};
+use teamai_provider::{PageOpts, Provider, ProviderError, WebhookConfig, Workspace};
 use teamai_provider_github::{
     scan::{
         read_skill_detail, scan_skill_assets_streaming, scan_workspace_detail,
@@ -89,7 +89,7 @@ impl TargetSelection {
     pub fn all_default() -> Self {
         Self {
             claude_code: true,
-            cursor: true,
+            cursor: false,
             codex: true,
             custom: Vec::new(),
         }
@@ -564,7 +564,10 @@ pub async fn scan_github_workspace_skills_streaming(
         )));
     }
     let provider = github_provider(workspace, token)?;
-    let ws = provider.get_workspace(workspace).await.map_err(sync_provider_error)?;
+    let ws = provider
+        .get_workspace(workspace)
+        .await
+        .map_err(sync_provider_error)?;
     let branch = teamai_provider::GitRef::Branch(ws.default_branch.clone());
     let skills = scan_skill_assets_streaming(&provider, workspace, &branch, on_batch)
         .await
@@ -1437,6 +1440,14 @@ mod tests {
         .unwrap();
         assert_eq!(file.subscriptions.len(), 1);
         assert_eq!(file.subscriptions[0].version.as_deref(), Some("1.0.0"));
+    }
+
+    #[test]
+    fn default_target_selection_uses_claude_and_shared_agents_root() {
+        assert_eq!(
+            TargetSelection::all_default().enabled_targets(),
+            vec!["claude-code".to_owned(), "codex".to_owned()]
+        );
     }
 
     #[test]

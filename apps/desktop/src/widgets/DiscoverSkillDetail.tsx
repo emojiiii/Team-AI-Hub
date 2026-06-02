@@ -14,7 +14,7 @@ import {
 import { getFileContentFromCache, putFileContentInCache } from "../lib/workspaceCache";
 import { useLocale } from "../hooks/useLocale";
 import { formatError } from "../utils/format";
-import { effectiveRisk, riskLabel, riskTone } from "../utils/risk";
+import { effectiveRisk, riskTone } from "../utils/risk";
 import { Pill } from "./Pill";
 import { SkillFileTree } from "./SkillFileTree";
 import { SkillSafetyCard } from "./SkillSafetyCard";
@@ -144,7 +144,7 @@ export function DiscoverSkillDetail({
               {manifest?.version ? <Pill mono>v{manifest.version}</Pill> : null}
               {riskLevel ? (
                 <Pill tone={riskTone[riskLevel] === "default" ? "default" : (riskTone[riskLevel] as never)}>
-                  {riskLabel[riskLevel]}
+                  {t(`risk.level.${riskLevel}`)}
                 </Pill>
               ) : null}
             </div>

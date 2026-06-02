@@ -110,8 +110,6 @@ pub struct ReviewResult {
 pub enum ReviewError {
     #[error("ai provider not configured")]
     NotConfigured,
-    #[error("ai api key not set")]
-    MissingKey,
     #[error("unsupported provider: {0}")]
     UnsupportedProvider(String),
     #[error("could not read skill files: {0}")]

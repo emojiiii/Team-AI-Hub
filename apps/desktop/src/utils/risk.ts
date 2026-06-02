@@ -3,13 +3,6 @@ import type { SkillManifest } from "../lib/teamai";
 export const riskOrder = ["low", "medium", "high", "critical"] as const;
 export type RiskRank = (typeof riskOrder)[number];
 
-export const riskLabel: Record<string, string> = {
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  critical: "Critical",
-};
-
 export const riskTone: Record<string, "success" | "warning" | "danger" | "default"> = {
   low: "success",
   medium: "warning",
@@ -40,8 +33,8 @@ export function riskRequiresConfirmation(risk: string): boolean {
   return risk === "medium" || risk === "high" || risk === "critical";
 }
 
-export function permissionSummary(manifest: SkillManifest): string {
-  return manifest.permissions.length ? manifest.permissions.join(", ") : "No permissions declared";
+export function permissionSummary(manifest: SkillManifest, t?: (key: string) => string): string {
+  return manifest.permissions.length ? manifest.permissions.join(", ") : (t ? t("common.noPermissionsDeclared") : "");
 }
 
 export const stateTone: Record<string, "success" | "warning" | "danger" | "default"> = {
@@ -100,4 +93,3 @@ export function plainPermissionLines(
   if (perms.has("secrets.read")) lines.push(t("safety.cap.secrets"));
   return lines;
 }
-

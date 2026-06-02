@@ -1,23 +1,42 @@
-import { Button } from "@heroui/react";
-import { useQuery } from "@tanstack/react-query";
-import { ExternalLink, GitMerge, GitPullRequestArrow, RefreshCw } from "lucide-react";
-import { useState } from "react";
+import { AlertDialog, Button, Spinner, toast } from "@heroui/react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  ExternalLink,
+  GitMerge,
+  GitPullRequestArrow,
+  MessageSquare,
+  RefreshCw,
+  XCircle,
+} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocale } from "../hooks/useLocale";
 import {
+  addWorkspacePullRequestComment,
+  closeWorkspacePullRequest,
   type PullRequestQueryState,
   type WorkspacePullRequest,
+  listWorkspacePullRequestFiles,
   listWorkspacePullRequests,
+  mergeWorkspacePullRequest,
 } from "../lib/teamai";
-import { formatRelativeTime } from "../utils/format";
-import { openExternalUrl } from "../utils/format";
+import { formatRelativeTime, openExternalUrl } from "../utils/format";
 import { Card } from "../widgets/Card";
 import { MetricTile } from "../widgets/MetricTile";
 import { Pill } from "../widgets/Pill";
+import { InlineFileDiff } from "../widgets/PublishModal";
 import { SegmentedTabs } from "../widgets/SegmentedTabs";
+
+const EMPTY_PRS: WorkspacePullRequest[] = [];
+
+function formatError(err: unknown) {
+  return err instanceof Error ? err.message : String(err);
+}
 
 export function PublishPage({ workspaceRef }: { workspaceRef: string }) {
   const { t } = useLocale();
+  const queryClient = useQueryClient();
   const [state, setState] = useState<PullRequestQueryState>("open");
+  const [selectedNumber, setSelectedNumber] = useState<number | null>(null);
 
   const stateOptions: Array<{ id: PullRequestQueryState; label: string }> = [
     { id: "open", label: t("publishPage.stateOpen") },
@@ -32,10 +51,69 @@ export function PublishPage({ workspaceRef }: { workspaceRef: string }) {
     staleTime: 60 * 1000,
   });
 
-  const prs = query.data ?? [];
+  const prs = query.data ?? EMPTY_PRS;
+  const selected = useMemo(
+    () => prs.find((pr) => pr.number === selectedNumber) ?? prs[0] ?? null,
+    [prs, selectedNumber],
+  );
+
+  useEffect(() => {
+    if (!selected && selectedNumber !== null) setSelectedNumber(null);
+    if (!selectedNumber && prs[0]) setSelectedNumber(prs[0].number);
+  }, [prs, selected, selectedNumber]);
+
   const open = prs.filter((pr) => pr.state === "open" && !pr.merged).length;
   const merged = prs.filter((pr) => pr.merged).length;
   const drafts = prs.filter((pr) => pr.draft).length;
+
+  const refreshPrs = () => {
+    void query.refetch();
+    void queryClient.invalidateQueries({ queryKey: ["pull-request-files", workspaceRef] });
+  };
+
+  const mergeMutation = useMutation({
+    mutationFn: (pr: WorkspacePullRequest) =>
+      mergeWorkspacePullRequest({
+        workspace: workspaceRef,
+        number: pr.number,
+        headRef: pr.head_ref,
+        headRepo: pr.head_repo,
+        deleteBranch: true,
+    }),
+    onSuccess: (result) => {
+      if (result.error) toast.warning(result.error);
+      else toast.success(result.deletedBranch ? t("publishPage.toastMergedDeletedBranch") : t("publishPage.toastMerged"));
+      refreshPrs();
+    },
+    onError: (err) => toast.danger(formatError(err)),
+  });
+
+  const closeMutation = useMutation({
+    mutationFn: (input: { pr: WorkspacePullRequest; comment: string }) =>
+      closeWorkspacePullRequest({
+        workspace: workspaceRef,
+        number: input.pr.number,
+        comment: input.comment.trim() || null,
+    }),
+    onSuccess: () => {
+      toast.success(t("publishPage.toastClosed"));
+      refreshPrs();
+    },
+    onError: (err) => toast.danger(formatError(err)),
+  });
+
+  const commentMutation = useMutation({
+    mutationFn: (input: { pr: WorkspacePullRequest; body: string }) =>
+      addWorkspacePullRequestComment({
+        workspace: workspaceRef,
+        number: input.pr.number,
+        body: input.body,
+    }),
+    onSuccess: () => {
+      toast.success(t("publishPage.toastCommented"));
+    },
+    onError: (err) => toast.danger(formatError(err)),
+  });
 
   if (!workspaceRef) {
     return (
@@ -50,14 +128,14 @@ export function PublishPage({ workspaceRef }: { workspaceRef: string }) {
 
   return (
     <section className="scroll-area min-h-0 flex-1 px-6 py-6">
-      <div className="mx-auto flex max-w-5xl flex-col gap-5">
+      <div className="mx-auto flex max-w-[1480px] flex-col gap-5">
         <div className="grid gap-3 md:grid-cols-3">
           <MetricTile label={t("publishPage.open")} value={open} tone={open ? "warning" : "default"} />
           <MetricTile label={t("publishPage.merged")} value={merged} tone={merged ? "success" : "default"} />
           <MetricTile label={t("publishPage.drafts")} value={drafts} tone={drafts ? "default" : "default"} />
         </div>
 
-        <Card className="overflow-hidden p-0 gap-0">
+        <Card className="min-h-[680px] overflow-hidden p-0 gap-0">
           <Card.Header>
             <div>
               <Card.Title>{t("publishPage.pullRequests")}</Card.Title>
@@ -67,7 +145,10 @@ export function PublishPage({ workspaceRef }: { workspaceRef: string }) {
               <SegmentedTabs<PullRequestQueryState>
                 tabs={stateOptions.map((o) => ({ id: o.id, label: o.label }))}
                 active={state}
-                onChange={setState}
+                onChange={(next) => {
+                  setState(next);
+                  setSelectedNumber(null);
+                }}
               />
               <Button
                 isIconOnly
@@ -75,6 +156,7 @@ export function PublishPage({ workspaceRef }: { workspaceRef: string }) {
                 variant="tertiary"
                 onPress={() => query.refetch()}
                 isPending={query.isFetching}
+                aria-label={t("publishPage.refreshPullRequests")}
               >
                 <RefreshCw size={13} />
               </Button>
@@ -83,15 +165,34 @@ export function PublishPage({ workspaceRef }: { workspaceRef: string }) {
 
           {query.error ? (
             <div className="border-b border-[var(--line)] bg-[var(--danger-soft)] px-4 py-2 text-[12px] text-[var(--danger)]">
-              {query.error instanceof Error ? query.error.message : String(query.error)}
+              {formatError(query.error)}
             </div>
           ) : null}
 
           {prs.length ? (
-            <div className="divide-y divide-[var(--line)]">
-              {prs.map((pr) => (
-                <PullRequestRow key={pr.number} pr={pr} />
-              ))}
+            <div className="grid min-h-0 flex-1 lg:grid-cols-[420px_minmax(0,1fr)]">
+              <div className="min-h-0 border-r border-[var(--line)]">
+                <div className="divide-y divide-[var(--line)]">
+                  {prs.map((pr) => (
+                    <PullRequestRow
+                      key={pr.number}
+                      pr={pr}
+                      selected={selected?.number === pr.number}
+                      onSelect={() => setSelectedNumber(pr.number)}
+                    />
+                  ))}
+                </div>
+              </div>
+              <PullRequestDetail
+                workspaceRef={workspaceRef}
+                pr={selected}
+                mergePending={mergeMutation.isPending}
+                closePending={closeMutation.isPending}
+                commentPending={commentMutation.isPending}
+                onMerge={(pr) => mergeMutation.mutate(pr)}
+                onClose={(input) => closeMutation.mutate(input)}
+                onComment={(input) => commentMutation.mutate(input)}
+              />
             </div>
           ) : query.isFetching ? (
             <div className="empty-state">
@@ -110,18 +211,30 @@ export function PublishPage({ workspaceRef }: { workspaceRef: string }) {
   );
 }
 
-function PullRequestRow({ pr }: { pr: WorkspacePullRequest }) {
+function PullRequestRow({
+  pr,
+  selected,
+  onSelect,
+}: {
+  pr: WorkspacePullRequest;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const { t } = useLocale();
   const tone: "success" | "warning" | "default" | "danger" = pr.merged
     ? "success"
     : pr.state === "open"
       ? "warning"
       : "default";
-  const label = pr.merged ? "merged" : pr.state;
+  const label = pr.merged ? t("publishPage.merged") : pr.state;
+
   return (
     <button
       type="button"
-      onClick={() => void openExternalUrl(pr.html_url)}
-      className="card-row w-full text-left"
+      onClick={onSelect}
+      className={`card-row w-full text-left ${
+        selected ? "bg-[var(--bg-soft)] shadow-[inset_3px_0_0_var(--brand)]" : ""
+      }`}
     >
       <div className="min-w-0">
         <div className="flex items-center gap-2">
@@ -137,7 +250,7 @@ function PullRequestRow({ pr }: { pr: WorkspacePullRequest }) {
           <span className="font-mono text-[11.5px] text-[var(--fg-muted)]">#{pr.number}</span>
         </div>
         <div className="mt-1 flex items-center gap-1.5 truncate text-[11.5px] text-[var(--fg-muted)]">
-          <span>{pr.author ? `@${pr.author}` : "—"}</span>
+          <span>{pr.author ? `@${pr.author}` : "-"}</span>
           <span>·</span>
           <span className="truncate font-mono">
             {pr.head_ref} → {pr.base_ref}
@@ -147,11 +260,261 @@ function PullRequestRow({ pr }: { pr: WorkspacePullRequest }) {
         </div>
       </div>
       <div className="flex items-center gap-1.5">
-        {pr.draft ? <Pill>draft</Pill> : null}
+        {pr.draft ? <Pill>{t("publishPage.statusDraft")}</Pill> : null}
         <Pill tone={tone}>{label}</Pill>
-        <ExternalLink size={12} className="text-[var(--fg-muted)]" />
       </div>
     </button>
+  );
+}
+
+function PullRequestDetail({
+  workspaceRef,
+  pr,
+  mergePending,
+  closePending,
+  commentPending,
+  onMerge,
+  onClose,
+  onComment,
+}: {
+  workspaceRef: string;
+  pr: WorkspacePullRequest | null;
+  mergePending: boolean;
+  closePending: boolean;
+  commentPending: boolean;
+  onMerge: (pr: WorkspacePullRequest) => void;
+  onClose: (input: { pr: WorkspacePullRequest; comment: string }) => void;
+  onComment: (input: { pr: WorkspacePullRequest; body: string }) => void;
+}) {
+  const { t } = useLocale();
+  const [comment, setComment] = useState("");
+  const [closeComment, setCloseComment] = useState("");
+  const filesQuery = useQuery({
+    queryKey: ["pull-request-files", workspaceRef, pr?.number],
+    queryFn: () => listWorkspacePullRequestFiles({ workspace: workspaceRef, number: pr!.number }),
+    enabled: Boolean(workspaceRef && pr),
+    staleTime: 60 * 1000,
+  });
+
+  useEffect(() => {
+    setComment("");
+    setCloseComment("");
+  }, [pr?.number]);
+
+  if (!pr) {
+    return (
+      <div className="empty-state">
+        <div className="empty-state__title">{t("publishPage.selectPr")}</div>
+        <div>{t("publishPage.selectPr.desc")}</div>
+      </div>
+    );
+  }
+
+  const openPr = pr.state === "open" && !pr.merged;
+  const files = filesQuery.data ?? [];
+  const body = pr.body?.trim();
+
+  return (
+    <div className="flex min-h-0 flex-col">
+      <div className="border-b border-[var(--line)] px-5 py-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="flex min-w-0 items-center gap-2">
+              {pr.merged ? (
+                <GitMerge size={16} className="text-[var(--success)]" />
+              ) : (
+                <GitPullRequestArrow
+                  size={16}
+                  className={openPr ? "text-[var(--warning)]" : "text-[var(--fg-muted)]"}
+                />
+              )}
+              <h2 className="truncate text-[15px] font-semibold tracking-tight">{pr.title}</h2>
+              <span className="font-mono text-[12px] text-[var(--fg-muted)]">#{pr.number}</span>
+            </div>
+            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] text-[var(--fg-muted)]">
+              <span>{pr.author ? `@${pr.author}` : "-"}</span>
+              <span>·</span>
+              <span className="font-mono">{pr.head_ref}</span>
+              <span>→</span>
+              <span className="font-mono">{pr.base_ref}</span>
+              <span>·</span>
+              <span>{formatRelativeTime(pr.updated_at)}</span>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              isIconOnly
+              size="sm"
+              variant="tertiary"
+              onPress={() => filesQuery.refetch()}
+              isPending={filesQuery.isFetching}
+              aria-label={t("publishPage.refreshDiff")}
+            >
+              <RefreshCw size={13} />
+            </Button>
+            <Button
+              isIconOnly
+              size="sm"
+              variant="tertiary"
+              onPress={() => void openExternalUrl(pr.html_url)}
+              aria-label={t("publishPage.openOnGithub")}
+            >
+              <ExternalLink size={13} />
+            </Button>
+          </div>
+        </div>
+
+        {body ? (
+          <div className="mt-3 max-h-28 overflow-auto rounded-md border border-[var(--line)] bg-[var(--bg-soft)] px-3 py-2 text-[12px] leading-5 text-[var(--fg-secondary)]">
+            {body}
+          </div>
+        ) : null}
+
+        {openPr ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <AlertDialog>
+              <Button size="sm" variant="outline" isDisabled={mergePending || closePending}>
+                <GitMerge size={14} />
+                {t("publishPage.merge")}
+              </Button>
+              <AlertDialog.Backdrop>
+                <AlertDialog.Container size="sm">
+                  <AlertDialog.Dialog className="sm:max-w-[420px]">
+                    <AlertDialog.CloseTrigger />
+                    <AlertDialog.Header>
+                      <AlertDialog.Icon status="success" />
+                      <AlertDialog.Heading>{t("publishPage.mergeTitle")}</AlertDialog.Heading>
+                    </AlertDialog.Header>
+                    <AlertDialog.Body>
+                      <div className="space-y-2 text-[13px] leading-[1.5] text-[var(--fg-secondary)]">
+                        <p>{t("publishPage.mergeDesc")}</p>
+                        <div className="rounded-md border border-[var(--line)] bg-[var(--bg-soft)] px-3 py-2">
+                          <div className="truncate font-medium text-[var(--fg)]">{pr.title}</div>
+                          <div className="mt-0.5 truncate font-mono text-[11px] text-[var(--fg-muted)]">
+                            {pr.head_ref} → {pr.base_ref}
+                          </div>
+                        </div>
+                      </div>
+                    </AlertDialog.Body>
+                    <AlertDialog.Footer>
+                      <Button slot="close" variant="outline">
+                        {t("common.cancel")}
+                      </Button>
+                      <Button
+                        slot="close"
+                        onPress={() => onMerge(pr)}
+                        isPending={mergePending}
+                      >
+                        {t("publishPage.confirmMerge")}
+                      </Button>
+                    </AlertDialog.Footer>
+                  </AlertDialog.Dialog>
+                </AlertDialog.Container>
+              </AlertDialog.Backdrop>
+            </AlertDialog>
+
+            <AlertDialog>
+              <Button size="sm" variant="danger-soft" isDisabled={mergePending || closePending}>
+                <XCircle size={14} />
+                {t("publishPage.rejectClose")}
+              </Button>
+              <AlertDialog.Backdrop>
+                <AlertDialog.Container size="sm">
+                  <AlertDialog.Dialog className="sm:max-w-[460px]">
+                    <AlertDialog.CloseTrigger />
+                    <AlertDialog.Header>
+                      <AlertDialog.Icon status="danger" />
+                      <AlertDialog.Heading>{t("publishPage.closeTitle")}</AlertDialog.Heading>
+                    </AlertDialog.Header>
+                    <AlertDialog.Body>
+                      <div className="space-y-3 text-[13px] leading-[1.5] text-[var(--fg-secondary)]">
+                        <p>{t("publishPage.closeDesc")}</p>
+                        <textarea
+                          value={closeComment}
+                          onChange={(event) => setCloseComment(event.target.value)}
+                          rows={5}
+                          className="w-full resize-y rounded-md border border-[var(--line)] bg-[var(--bg-elevated)] px-3 py-2 text-[13px] text-[var(--fg)] outline-none focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand-soft)]"
+                          placeholder={t("publishPage.closePlaceholder")}
+                        />
+                      </div>
+                    </AlertDialog.Body>
+                    <AlertDialog.Footer>
+                      <Button slot="close" variant="outline">
+                        {t("common.cancel")}
+                      </Button>
+                      <Button
+                        slot="close"
+                        variant="danger-soft"
+                        onPress={() => onClose({ pr, comment: closeComment })}
+                        isPending={closePending}
+                      >
+                        {t("publishPage.confirmClose")}
+                      </Button>
+                    </AlertDialog.Footer>
+                  </AlertDialog.Dialog>
+                </AlertDialog.Container>
+              </AlertDialog.Backdrop>
+            </AlertDialog>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="min-h-0 overflow-y-auto bg-[var(--bg-soft)] px-4 py-3">
+          {filesQuery.isFetching && !files.length ? (
+            <div className="flex items-center justify-center gap-2 rounded-md border border-[var(--line)] bg-[var(--bg-elevated)] px-4 py-10 text-[12px] text-[var(--fg-muted)]">
+              <Spinner size="sm" />
+              {t("publishPage.loadingDiff")}
+            </div>
+          ) : filesQuery.error ? (
+            <div className="rounded-md border border-[var(--danger)] bg-[var(--danger-soft)] px-3 py-2 text-[12px] text-[var(--danger)]">
+              {formatError(filesQuery.error)}
+            </div>
+          ) : files.length ? (
+            <div className="space-y-4">
+              {files.map((file) => (
+                <InlineFileDiff key={file.filename} file={file} />
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-md border border-dashed border-[var(--line)] bg-[var(--bg-elevated)] px-4 py-10 text-center text-[12px] text-[var(--fg-muted)]">
+              {t("publishPage.noFileChanges")}
+            </div>
+          )}
+        </div>
+
+        <aside className="flex min-h-0 flex-col border-l border-[var(--line)] bg-[var(--bg-elevated)]">
+          <div className="border-b border-[var(--line)] px-4 py-3">
+            <div className="text-[12px] font-semibold text-[var(--fg)]">{t("publishPage.comments")}</div>
+            <div className="mt-0.5 text-[11.5px] text-[var(--fg-muted)]">{t("publishPage.commentsDesc")}</div>
+          </div>
+          <div className="flex min-h-0 flex-1 flex-col gap-3 px-4 py-3">
+            <textarea
+              value={comment}
+              onChange={(event) => setComment(event.target.value)}
+              rows={8}
+              className="w-full resize-y rounded-md border border-[var(--line)] bg-[var(--bg)] px-3 py-2 text-[13px] text-[var(--fg)] outline-none focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand-soft)]"
+              placeholder={t("publishPage.commentPlaceholder")}
+            />
+            <Button
+              size="sm"
+              onPress={() => {
+                onComment({ pr, body: comment });
+                setComment("");
+              }}
+              isDisabled={!comment.trim() || commentPending}
+              isPending={commentPending}
+            >
+              <MessageSquare size={14} />
+              {t("publishPage.submitComment")}
+            </Button>
+            <div className="mt-auto rounded-md border border-[var(--line)] bg-[var(--bg-soft)] px-3 py-2 text-[11.5px] leading-5 text-[var(--fg-muted)]">
+              {t("publishPage.commentNote")}
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
   );
 }
 

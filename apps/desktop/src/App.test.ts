@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { navRoutes, pageCopy, routeToPage } from "./utils/navigation";
+import { navRoutes, pageCopyKeys, routeToPage } from "./utils/navigation";
 import { formatError } from "./utils/format";
 
 describe("desktop routed management pages", () => {
@@ -15,12 +15,12 @@ describe("desktop routed management pages", () => {
     expect(routeToPage("/cli")).toBe("cli");
   });
 
-  it("keeps the sidebar route contract aligned with page copy", () => {
+  it("keeps the sidebar route contract aligned with page copy keys", () => {
     for (const route of navRoutes) {
-      expect(pageCopy[route.page].title).toBeTruthy();
-      expect(pageCopy[route.page].subtitle).toBeTruthy();
+      expect(pageCopyKeys[route.page].titleKey).toBeTruthy();
+      expect(pageCopyKeys[route.page].subtitleKey).toBeTruthy();
     }
-    expect(pageCopy.invitations.subtitle).toContain("collaborators");
+    expect(pageCopyKeys.invitations.subtitleKey).toBe("page.members.subtitle");
   });
 
   it("navRoutes covers all workspace-scoped and personal pages", () => {

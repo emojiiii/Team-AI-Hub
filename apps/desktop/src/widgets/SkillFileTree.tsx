@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { listSkillFiles, type SkillFileEntry } from "../lib/teamai";
 import { getFileTreeFromCache, putFileTreeInCache } from "../lib/workspaceCache";
 import { useLocalStorage } from "../hooks/useLocalStorage";
+import { useLocale } from "../hooks/useLocale";
 
 interface FileNode {
   name: string;
@@ -170,6 +171,7 @@ export function SkillFileTree({
   selectedFile: string | null;
   onSelectFile: (path: string) => void;
 }) {
+  const { t } = useLocale();
   const [expandedDirs, setExpandedDirs] = useLocalStorage<Record<string, boolean>>(
     `ws-ui:${workspace}:${skillPath}:dirs`,
     {},
@@ -202,13 +204,13 @@ export function SkillFileTree({
 
   if (isLoading) {
     return (
-      <div className="px-3 py-2 text-[11px] text-[var(--fg-muted)]">Loading files…</div>
+      <div className="px-3 py-2 text-[11px] text-[var(--fg-muted)]">{t("fileTree.loading")}</div>
     );
   }
 
   if (!files?.length) {
     return (
-      <div className="px-3 py-2 text-[11px] text-[var(--fg-muted)]">No files found</div>
+      <div className="px-3 py-2 text-[11px] text-[var(--fg-muted)]">{t("fileTree.empty")}</div>
     );
   }
 

@@ -616,11 +616,7 @@ async fn run_command(command: Command, paths: &AppPaths) -> anyhow::Result<()> {
             status["locks"] = serde_json::Value::Array(locks);
             let target_roots = parse_target_roots(target_roots)?;
             let target_list = if targets.is_empty() {
-                vec![
-                    "claude-code".to_owned(),
-                    "cursor".to_owned(),
-                    "codex".to_owned(),
-                ]
+                vec!["claude-code".to_owned(), "codex".to_owned()]
             } else {
                 targets
             };

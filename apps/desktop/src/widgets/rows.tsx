@@ -7,7 +7,7 @@ import type {
 } from "../lib/teamai";
 import { useLocale } from "../hooks/useLocale";
 import { formatDateTime, formatRelativeTime, shortHash } from "../utils/format";
-import { riskLabel, riskTone, stateTone } from "../utils/risk";
+import { riskTone, stateTone } from "../utils/risk";
 import { Pill } from "./Pill";
 
 export function PublishRequestRow({ request }: { request: PublishRequestRecord }) {
@@ -25,7 +25,7 @@ export function PublishRequestRow({ request }: { request: PublishRequestRecord }
         </div>
         <div className="mt-2 flex flex-wrap gap-1">
           <Pill tone={(riskTone[request.policy.risk_level] ?? "default") as never}>
-            {riskLabel[request.policy.risk_level] ?? request.policy.risk_level}
+            {riskTone[request.policy.risk_level] ? t(`risk.level.${request.policy.risk_level}`) : request.policy.risk_level}
           </Pill>
           <Pill tone={request.autoMerged ? "success" : "default"}>
             {request.autoMerged ? t("rows.autoMerged") : t("rows.manual")}
@@ -60,7 +60,7 @@ export function PolicyCheckRow({ check }: { check: PublishPolicyCheckRecord }) {
       </div>
       <div className="flex flex-col items-end gap-1">
         <Pill tone={(riskTone[check.policy.risk_level] ?? "default") as never}>
-          {riskLabel[check.policy.risk_level] ?? check.policy.risk_level}
+          {riskTone[check.policy.risk_level] ? t(`risk.level.${check.policy.risk_level}`) : check.policy.risk_level}
         </Pill>
         <Pill tone={check.policy.auto_merge_allowed ? "success" : "warning"}>
           {check.decision.replaceAll("_", " ")}

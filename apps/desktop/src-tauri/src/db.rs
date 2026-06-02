@@ -1,9 +1,9 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: u32 = 3;
+const SCHEMA_VERSION: u32 = 4;
 
 /// All supported agent/IDE runtimes and their global skill directories.
 pub struct RuntimeInfo {
@@ -19,74 +19,9 @@ pub const SUPPORTED_RUNTIMES: &[RuntimeInfo] = &[
         global_path: ".claude/skills",
     },
     RuntimeInfo {
-        id: "cursor",
-        label: "Cursor",
-        global_path: ".cursor/skills",
-    },
-    RuntimeInfo {
         id: "codex",
         label: "Codex",
-        global_path: ".codex/skills",
-    },
-    RuntimeInfo {
-        id: "gemini-cli",
-        label: "Gemini CLI",
-        global_path: ".gemini/skills",
-    },
-    RuntimeInfo {
-        id: "github-copilot",
-        label: "GitHub Copilot",
-        global_path: ".copilot/skills",
-    },
-    RuntimeInfo {
-        id: "windsurf",
-        label: "Windsurf",
-        global_path: ".codeium/windsurf/skills",
-    },
-    RuntimeInfo {
-        id: "opencode",
-        label: "OpenCode",
-        global_path: ".config/opencode/skills",
-    },
-    RuntimeInfo {
-        id: "kiro-cli",
-        label: "Kiro CLI",
-        global_path: ".kiro/skills",
-    },
-    RuntimeInfo {
-        id: "roo",
-        label: "Roo Code",
-        global_path: ".roo/skills",
-    },
-    RuntimeInfo {
-        id: "continue",
-        label: "Continue",
-        global_path: ".continue/skills",
-    },
-    RuntimeInfo {
-        id: "hermes-agent",
-        label: "Hermes Agent",
-        global_path: ".hermes/skills",
-    },
-    RuntimeInfo {
-        id: "trae",
-        label: "Trae",
-        global_path: ".trae/skills",
-    },
-    RuntimeInfo {
-        id: "cline",
-        label: "Cline",
         global_path: ".agents/skills",
-    },
-    RuntimeInfo {
-        id: "goose",
-        label: "Goose",
-        global_path: ".config/goose/skills",
-    },
-    RuntimeInfo {
-        id: "devin",
-        label: "Devin",
-        global_path: ".config/devin/skills",
     },
 ];
 
@@ -204,6 +139,36 @@ impl Database {
                 ALTER TABLE skills ADD COLUMN review_findings_json TEXT NOT NULL DEFAULT '';
                 ALTER TABLE skills ADD COLUMN reviewed_at TEXT NOT NULL DEFAULT '';
                 ALTER TABLE skills ADD COLUMN reviewed_hash TEXT NOT NULL DEFAULT '';
+                ",
+            )?;
+            self.conn
+                .execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+        }
+
+        if version < 4 {
+            // Project-level deployments are separate from global runtime targets.
+            // A single skill can be installed into many projects for the same
+            // runtime, so the old (skill_id, runtime) key is not sufficient.
+            self.conn.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS skill_project_deployments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+                    runtime TEXT NOT NULL,
+                    project_root TEXT NOT NULL,
+                    target_path TEXT NOT NULL,
+                    enabled INTEGER DEFAULT 1,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    installed_hash TEXT DEFAULT '',
+                    last_seen_hash TEXT DEFAULT '',
+                    installed_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_checked_at TEXT DEFAULT '',
+                    UNIQUE(skill_id, runtime, project_root)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_project_deployments_skill ON skill_project_deployments(skill_id);
+                CREATE INDEX IF NOT EXISTS idx_project_deployments_project ON skill_project_deployments(project_root);
                 ",
             )?;
             self.conn
@@ -346,18 +311,9 @@ impl Database {
         Ok(())
     }
 
-    /// Clear any cached review for a skill (back to the "never reviewed" state).
-    pub fn clear_review(&self, id: &str) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "UPDATE skills SET review_verdict = '', review_summary = '', review_findings_json = '', reviewed_at = '', reviewed_hash = '' WHERE id = ?1",
-            params![id],
-        )?;
-        Ok(())
-    }
-
     pub fn list_skills(&self) -> rusqlite::Result<Vec<SkillRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, description, version, source_workspace, source_path, source_branch, local_path, link_mode, baseline_hash, published_hash, is_modified, installed_at, updated_at, install_status, download_progress, download_error, review_verdict, review_summary, review_findings_json, reviewed_at, reviewed_hash FROM skills ORDER BY name"
+            "SELECT id, name, description, version, source_workspace, source_path, source_branch, local_path, link_mode, baseline_hash, is_modified, installed_at, updated_at, install_status, download_progress, download_error, review_verdict, review_summary, review_findings_json, reviewed_at, reviewed_hash FROM skills ORDER BY name"
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(SkillRow {
@@ -371,18 +327,17 @@ impl Database {
                 local_path: row.get(7)?,
                 link_mode: row.get(8)?,
                 baseline_hash: row.get(9)?,
-                published_hash: row.get(10)?,
-                is_modified: row.get::<_, i32>(11)? != 0,
-                installed_at: row.get(12)?,
-                updated_at: row.get(13)?,
-                install_status: row.get(14)?,
-                download_progress: row.get(15)?,
-                download_error: row.get(16)?,
-                review_verdict: row.get(17)?,
-                review_summary: row.get(18)?,
-                review_findings_json: row.get(19)?,
-                reviewed_at: row.get(20)?,
-                reviewed_hash: row.get(21)?,
+                is_modified: row.get::<_, i32>(10)? != 0,
+                installed_at: row.get(11)?,
+                updated_at: row.get(12)?,
+                install_status: row.get(13)?,
+                download_progress: row.get(14)?,
+                download_error: row.get(15)?,
+                review_verdict: row.get(16)?,
+                review_summary: row.get(17)?,
+                review_findings_json: row.get(18)?,
+                reviewed_at: row.get(19)?,
+                reviewed_hash: row.get(20)?,
             })
         })?;
         rows.collect()
@@ -390,7 +345,7 @@ impl Database {
 
     pub fn get_skill(&self, id: &str) -> rusqlite::Result<Option<SkillRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, description, version, source_workspace, source_path, source_branch, local_path, link_mode, baseline_hash, published_hash, is_modified, installed_at, updated_at, install_status, download_progress, download_error, review_verdict, review_summary, review_findings_json, reviewed_at, reviewed_hash FROM skills WHERE id = ?1"
+            "SELECT id, name, description, version, source_workspace, source_path, source_branch, local_path, link_mode, baseline_hash, is_modified, installed_at, updated_at, install_status, download_progress, download_error, review_verdict, review_summary, review_findings_json, reviewed_at, reviewed_hash FROM skills WHERE id = ?1"
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
             Ok(SkillRow {
@@ -404,30 +359,23 @@ impl Database {
                 local_path: row.get(7)?,
                 link_mode: row.get(8)?,
                 baseline_hash: row.get(9)?,
-                published_hash: row.get(10)?,
-                is_modified: row.get::<_, i32>(11)? != 0,
-                installed_at: row.get(12)?,
-                updated_at: row.get(13)?,
-                install_status: row.get(14)?,
-                download_progress: row.get(15)?,
-                download_error: row.get(16)?,
-                review_verdict: row.get(17)?,
-                review_summary: row.get(18)?,
-                review_findings_json: row.get(19)?,
-                reviewed_at: row.get(20)?,
-                reviewed_hash: row.get(21)?,
+                is_modified: row.get::<_, i32>(10)? != 0,
+                installed_at: row.get(11)?,
+                updated_at: row.get(12)?,
+                install_status: row.get(13)?,
+                download_progress: row.get(14)?,
+                download_error: row.get(15)?,
+                review_verdict: row.get(16)?,
+                review_summary: row.get(17)?,
+                review_findings_json: row.get(18)?,
+                reviewed_at: row.get(19)?,
+                reviewed_hash: row.get(20)?,
             })
         })?;
         match rows.next() {
             Some(row) => Ok(Some(row?)),
             None => Ok(None),
         }
-    }
-
-    pub fn remove_skill(&self, id: &str) -> rusqlite::Result<()> {
-        self.conn
-            .execute("DELETE FROM skills WHERE id = ?1", params![id])?;
-        Ok(())
     }
 
     // -------------------------------------------------------------------------
@@ -476,6 +424,127 @@ impl Database {
             })
         })?;
         rows.collect()
+    }
+
+    // -------------------------------------------------------------------------
+    // Project deployments
+    // -------------------------------------------------------------------------
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn upsert_project_deployment(
+        &self,
+        skill_id: &str,
+        runtime: &str,
+        project_root: &str,
+        target_path: &str,
+        installed_hash: &str,
+    ) -> rusqlite::Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO skill_project_deployments
+                (skill_id, runtime, project_root, target_path, enabled, status, installed_hash, last_seen_hash, installed_at, updated_at, last_checked_at)
+             VALUES (?1, ?2, ?3, ?4, 1, 'active', ?5, ?5, ?6, ?6, ?6)
+             ON CONFLICT(skill_id, runtime, project_root) DO UPDATE SET
+                target_path = excluded.target_path,
+                enabled = 1,
+                status = 'active',
+                installed_hash = excluded.installed_hash,
+                last_seen_hash = excluded.last_seen_hash,
+                updated_at = excluded.updated_at,
+                last_checked_at = excluded.last_checked_at",
+            params![skill_id, runtime, project_root, target_path, installed_hash, &now],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_project_deployments(&self) -> rusqlite::Result<Vec<SkillProjectDeploymentRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, skill_id, runtime, project_root, target_path, enabled, status, installed_hash, last_seen_hash, installed_at, updated_at, last_checked_at
+             FROM skill_project_deployments
+             ORDER BY project_root, runtime",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(SkillProjectDeploymentRow {
+                id: row.get(0)?,
+                skill_id: row.get(1)?,
+                runtime: row.get(2)?,
+                project_root: row.get(3)?,
+                target_path: row.get(4)?,
+                enabled: row.get::<_, i32>(5)? != 0,
+                status: row.get(6)?,
+                installed_hash: row.get(7)?,
+                last_seen_hash: row.get(8)?,
+                installed_at: row.get(9)?,
+                updated_at: row.get(10)?,
+                last_checked_at: row.get(11)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn get_project_deployment(
+        &self,
+        id: i64,
+    ) -> rusqlite::Result<Option<SkillProjectDeploymentRow>> {
+        self.conn
+            .query_row(
+                "SELECT id, skill_id, runtime, project_root, target_path, enabled, status, installed_hash, last_seen_hash, installed_at, updated_at, last_checked_at
+                 FROM skill_project_deployments
+                 WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok(SkillProjectDeploymentRow {
+                        id: row.get(0)?,
+                        skill_id: row.get(1)?,
+                        runtime: row.get(2)?,
+                        project_root: row.get(3)?,
+                        target_path: row.get(4)?,
+                        enabled: row.get::<_, i32>(5)? != 0,
+                        status: row.get(6)?,
+                        installed_hash: row.get(7)?,
+                        last_seen_hash: row.get(8)?,
+                        installed_at: row.get(9)?,
+                        updated_at: row.get(10)?,
+                        last_checked_at: row.get(11)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
+    pub fn set_project_deployment_status(
+        &self,
+        id: i64,
+        status: &str,
+        last_seen_hash: &str,
+    ) -> rusqlite::Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE skill_project_deployments
+             SET status = ?1, last_seen_hash = ?2, updated_at = ?3, last_checked_at = ?3
+             WHERE id = ?4",
+            params![status, last_seen_hash, &now, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_project_deployment_enabled(&self, id: i64, enabled: bool) -> rusqlite::Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE skill_project_deployments
+             SET enabled = ?1, updated_at = ?2
+             WHERE id = ?3",
+            params![enabled as i32, &now, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_project_deployment(&self, id: i64) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "DELETE FROM skill_project_deployments WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
     }
 
     // -------------------------------------------------------------------------
@@ -575,7 +644,6 @@ pub struct SkillRow {
     pub local_path: String,
     pub link_mode: String,
     pub baseline_hash: String,
-    pub published_hash: String,
     pub is_modified: bool,
     pub installed_at: String,
     pub updated_at: String,
@@ -595,6 +663,22 @@ pub struct SkillTargetRow {
     pub runtime: String,
     pub enabled: bool,
     pub target_path: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SkillProjectDeploymentRow {
+    pub id: i64,
+    pub skill_id: String,
+    pub runtime: String,
+    pub project_root: String,
+    pub target_path: String,
+    pub enabled: bool,
+    pub status: String,
+    pub installed_hash: String,
+    pub last_seen_hash: String,
+    pub installed_at: String,
+    pub updated_at: String,
+    pub last_checked_at: String,
 }
 
 #[derive(Debug, Clone)]
@@ -738,52 +822,10 @@ impl Database {
         Ok(modified)
     }
 
-    /// Mark a skill as modified or not.
-    pub fn set_modified(&self, id: &str, modified: bool) -> rusqlite::Result<()> {
-        let now = chrono::Utc::now().to_rfc3339();
-        self.conn.execute(
-            "UPDATE skills SET is_modified = ?1, updated_at = ?2 WHERE id = ?3",
-            params![modified as i32, &now, id],
-        )?;
-        Ok(())
-    }
-
-    /// After publishing: update version, reset hash, clear modified flag.
-    pub fn mark_published(&self, id: &str, new_version: &str) -> rusqlite::Result<()> {
-        let skill = match self.get_skill(id)? {
-            Some(s) => s,
-            None => return Ok(()),
-        };
-        let current_hash = compute_dir_hash(Path::new(&skill.local_path));
-        let mtime = collect_mtime_fingerprint(Path::new(&skill.local_path));
-        let now = chrono::Utc::now().to_rfc3339();
-        self.conn.execute(
-            "UPDATE skills SET version = ?1, baseline_hash = ?2, published_hash = ?2, mtime_fingerprint = ?3, is_modified = 0, updated_at = ?4 WHERE id = ?5",
-            params![new_version, &current_hash, &mtime, &now, id],
-        )?;
-        Ok(())
-    }
-
-    /// After receiving a subscription update: overwrite local files, reset hash.
-    pub fn mark_updated_from_remote(&self, id: &str, new_version: &str) -> rusqlite::Result<()> {
-        let skill = match self.get_skill(id)? {
-            Some(s) => s,
-            None => return Ok(()),
-        };
-        let current_hash = compute_dir_hash(Path::new(&skill.local_path));
-        let mtime = collect_mtime_fingerprint(Path::new(&skill.local_path));
-        let now = chrono::Utc::now().to_rfc3339();
-        self.conn.execute(
-            "UPDATE skills SET version = ?1, baseline_hash = ?2, published_hash = ?2, mtime_fingerprint = ?3, is_modified = 0, updated_at = ?4 WHERE id = ?5",
-            params![new_version, &current_hash, &mtime, &now, id],
-        )?;
-        Ok(())
-    }
-
     /// Unmanage a skill: remove from registry, restore real files to IDE directories.
     pub fn unmanage_skill(&self, id: &str) -> rusqlite::Result<Option<SkillRow>> {
         let skill = self.get_skill(id)?;
-        if let Some(ref s) = skill {
+        if skill.is_some() {
             // Get all targets so caller can restore symlinks to real copies
             let _ = self
                 .conn
@@ -794,22 +836,6 @@ impl Database {
             // Note: caller is responsible for filesystem operations (replace symlinks with copies)
         }
         Ok(skill)
-    }
-
-    /// Bump version string (semver-like).
-    pub fn bump_version(current: &str, bump_type: &str) -> String {
-        let parts: Vec<u32> = current.split('.').filter_map(|s| s.parse().ok()).collect();
-        let (major, minor, patch) = match parts.as_slice() {
-            [a, b, c, ..] => (*a, *b, *c),
-            [a, b] => (*a, *b, 0),
-            [a] => (*a, 0, 0),
-            _ => (0, 1, 0),
-        };
-        match bump_type {
-            "major" => format!("{}.0.0", major + 1),
-            "minor" => format!("{}.{}.0", major, minor + 1),
-            _ => format!("{}.{}.{}", major, minor, patch + 1), // patch
-        }
     }
 }
 
@@ -912,17 +938,18 @@ pub fn scan_unmanaged_skills(home: &Path, db: &Database) -> Vec<UnmanagedSkill> 
             if !path.is_dir() {
                 continue;
             }
-            let id = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
+            if !path.join("SKILL.md").is_file() {
+                continue;
+            }
+            let Some((id, name)) = parse_skill_identity_from_skill_md(&path) else {
+                continue;
+            };
             if id.starts_with('.') || managed_ids.contains(&id) {
                 continue;
             }
             let skill = found.entry(id.clone()).or_insert_with(|| UnmanagedSkill {
                 id: id.clone(),
-                name: humanize_name(&id),
+                name,
                 path: path.clone(),
                 found_in: Vec::new(),
                 locations: Vec::new(),
@@ -938,6 +965,34 @@ pub fn scan_unmanaged_skills(home: &Path, db: &Database) -> Vec<UnmanagedSkill> 
     let mut result: Vec<UnmanagedSkill> = found.into_values().collect();
     result.sort_by(|a, b| a.name.cmp(&b.name));
     result
+}
+
+fn parse_skill_identity_from_skill_md(path: &Path) -> Option<(String, String)> {
+    let manifest = teamai_manifest::parse_skill_dir(path).ok()?.manifest?;
+    let name = manifest.name.trim().to_owned();
+    if name.is_empty() {
+        return None;
+    }
+    let id = slugify_skill_name(&name);
+    if id.is_empty() {
+        return None;
+    }
+    Some((id, name))
+}
+
+fn slugify_skill_name(name: &str) -> String {
+    name.trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches(['-', '.', '_'])
+        .to_owned()
 }
 
 #[derive(Debug, Clone)]

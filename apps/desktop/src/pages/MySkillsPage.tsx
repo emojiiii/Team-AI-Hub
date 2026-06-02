@@ -1,24 +1,33 @@
-import { Button, cn, Modal, ProgressBar, Spinner, Switch, Tooltip, toast } from "@heroui/react";
+import { AlertDialog, Button, cn, Modal, ProgressBar, Spinner, Switch, Tooltip, toast } from "@heroui/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ChevronDown, Download, FolderOpen, GitPullRequestArrow, Package, PackageOpen, RefreshCw, RotateCcw, ShieldAlert, ShieldCheck, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { AlertTriangle, ChevronDown, Download, ExternalLink, FolderOpen, GitPullRequestArrow, Package, PackageOpen, RefreshCw, RotateCcw, ShieldAlert, ShieldCheck, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   type AiReviewResult,
+  listPathOpeners,
+  dbCheckProjectDeployments,
+  dbDeleteProjectDeployment,
   dbDisableSkill,
   dbEnableSkill,
   dbImportSkill,
   dbListRuntimes,
   dbListSkills,
   dbScanUnmanaged,
+  dbSetProjectDeploymentEnabled,
   dbUnmanageSkill,
   downloadSkillAsync,
   type ManagedSkill,
+  type ManagedSkillProjectDeployment,
   onSkillDownloadProgress,
+  openLocalPath,
+  type PathOpener,
   reviewLocalSkill,
+  selectProjectDirectory,
   selectSkillDirectory,
   syncNow,
   type UnmanagedSkillInfo,
 } from "../lib/teamai";
+import { openExternalUrl } from "../utils/format";
 import { useLocale } from "../hooks/useLocale";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useTheme } from "../hooks/useTheme";
@@ -28,9 +37,9 @@ import { Pill, type PillTone } from "../widgets/Pill";
 
 const TOOL_LABELS: Record<string, string> = {
   "claude-code": "Claude Code",
-  cursor: "Cursor",
   codex: "Codex",
 };
+const INSTALL_TARGET_IDS = new Set(Object.keys(TOOL_LABELS));
 
 /** AI review verdict → Pill tone. */
 const VERDICT_TONE: Record<string, PillTone> = {
@@ -64,6 +73,9 @@ export function MySkillsPage() {
   const queryClient = useQueryClient();
   const [showImport, setShowImport] = useState(false);
   const [customSkillPath, setCustomSkillPath] = useState("");
+  const [customProjectInstall, setCustomProjectInstall] = useState(false);
+  const [customProjectPath, setCustomProjectPath] = useState("");
+  const [customProjectRuntime, setCustomProjectRuntime] = useState("codex");
   const [openImportGroups, setOpenImportGroups] = useLocalStorage<Record<string, boolean>>(
     "my-skills:import-groups",
     EMPTY_IMPORT_GROUPS,
@@ -81,6 +93,7 @@ export function MySkillsPage() {
 
   const skills = useQuery({ queryKey: ["db-skills"], queryFn: dbListSkills, staleTime: 30 * 1000 });
   const runtimes = useQuery({ queryKey: ["db-runtimes"], queryFn: dbListRuntimes, staleTime: 5 * 60 * 1000 });
+  const pathOpeners = useQuery({ queryKey: ["path-openers"], queryFn: listPathOpeners, staleTime: 10 * 60 * 1000 });
   const unmanaged = useQuery({
     queryKey: ["db-unmanaged"],
     queryFn: dbScanUnmanaged,
@@ -115,6 +128,17 @@ export function MySkillsPage() {
     };
   }, [queryClient]);
 
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      void dbCheckProjectDeployments()
+        .then((changed) => {
+          if (changed > 0) queryClient.invalidateQueries({ queryKey: ["db-skills"] });
+        })
+        .catch(() => undefined);
+    }, 900);
+    return () => window.clearTimeout(id);
+  }, [queryClient]);
+
   const enable = useMutation({
     mutationFn: (a: { skillId: string; runtime: string }) => dbEnableSkill(a.skillId, a.runtime),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["db-skills"] }),
@@ -122,6 +146,17 @@ export function MySkillsPage() {
   const disable = useMutation({
     mutationFn: (a: { skillId: string; runtime: string }) => dbDisableSkill(a.skillId, a.runtime),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["db-skills"] }),
+  });
+  const toggleProjectDeployment = useMutation({
+    mutationFn: (a: { deploymentId: number; enabled: boolean }) =>
+      dbSetProjectDeploymentEnabled(a.deploymentId, a.enabled),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["db-skills"] }),
+    onError: (err) => toast.danger(String((err as { message?: string })?.message ?? err)),
+  });
+  const deleteProjectDeployment = useMutation({
+    mutationFn: (deploymentId: number) => dbDeleteProjectDeployment(deploymentId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["db-skills"] }),
+    onError: (err) => toast.danger(String((err as { message?: string })?.message ?? err)),
   });
   const remove = useMutation({
     mutationFn: (skillId: string) => dbUnmanageSkill(skillId),
@@ -132,9 +167,14 @@ export function MySkillsPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["db-skills"] }),
   });
   const importSkill = useMutation({
-    mutationFn: (a: { skillId: string; sourcePath: string }) => dbImportSkill(a.skillId, a.sourcePath),
+    mutationFn: (a: {
+      skillId: string;
+      sourcePath: string;
+      projectTargets?: Array<{ runtime: string; projectRoot: string }>;
+    }) => dbImportSkill(a.skillId, a.sourcePath, undefined, a.projectTargets),
     onSuccess: () => {
       setCustomSkillPath("");
+      setCustomProjectPath("");
       queryClient.invalidateQueries({ queryKey: ["db-skills"] });
       queryClient.invalidateQueries({ queryKey: ["db-unmanaged"] });
     },
@@ -152,7 +192,9 @@ export function MySkillsPage() {
         version: skill.version || undefined,
         name: skill.name,
         description: skill.description,
-        targets: skill.targets.filter((tg) => tg.enabled).map((tg) => tg.runtime),
+        targets: skill.targets
+          .filter((tg) => tg.enabled && INSTALL_TARGET_IDS.has(tg.runtime))
+          .map((tg) => tg.runtime),
         linkMode: skill.linkMode || undefined,
       }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["db-skills"] }),
@@ -181,7 +223,10 @@ export function MySkillsPage() {
   });
   const list = skills.data ?? [];
   const tools = (runtimes.data ?? []).filter((r) => r.exists);
-  const totalEnabled = list.reduce((sum, s) => sum + s.targets.filter((tg) => tg.enabled).length, 0);
+  const totalEnabled = list.reduce(
+    (sum, s) => sum + s.targets.filter((tg) => tg.enabled && INSTALL_TARGET_IDS.has(tg.runtime)).length,
+    0,
+  );
   const runtimeMetaById = useMemo(() => {
     const map = new Map<string, { label: string; globalPath: string; exists: boolean }>();
     for (const runtime of runtimes.data ?? []) {
@@ -199,6 +244,9 @@ export function MySkillsPage() {
     : disable.isPending
       ? `${disable.variables?.skillId}:${disable.variables?.runtime}`
       : null;
+  const busyProjectDeploymentId = toggleProjectDeployment.isPending
+    ? toggleProjectDeployment.variables?.deploymentId
+    : null;
 
   // Group unmanaged skills by source runtime for the import modal.
   const groupedUnmanaged = useMemo(() => {
@@ -241,7 +289,20 @@ export function MySkillsPage() {
     }
   };
 
+  const handleChooseProjectFolder = async () => {
+    try {
+      const selected = await selectProjectDirectory();
+      if (selected) setCustomProjectPath(selected);
+    } catch (err) {
+      toast.danger(String((err as { message?: string })?.message ?? err));
+    }
+  };
+
   const customImportPending = importSkill.isPending && importSkill.variables?.skillId === "";
+  const customProjectTargets =
+    customProjectInstall && customProjectPath.trim()
+      ? [{ runtime: customProjectRuntime, projectRoot: customProjectPath.trim() }]
+      : undefined;
 
   return (
     <section className="scroll-area min-h-0 flex-1">
@@ -317,13 +378,68 @@ export function MySkillsPage() {
                       <Button
                         size="sm"
                         variant="secondary"
-                        isDisabled={!customSkillPath.trim()}
+                        isDisabled={!customSkillPath.trim() || (customProjectInstall && !customProjectPath.trim())}
                         isPending={customImportPending}
-                        onPress={() => importSkill.mutate({ skillId: "", sourcePath: customSkillPath.trim() })}
+                        onPress={() =>
+                          importSkill.mutate({
+                            skillId: "",
+                            sourcePath: customSkillPath.trim(),
+                            projectTargets: customProjectTargets,
+                          })
+                        }
                       >
                         <Download size={12} />
                         {t("local.importSelectedFolder")}
                       </Button>
+                    </div>
+                    <div className="mt-3 rounded-md border border-[var(--line)] bg-[var(--bg-elevated)] px-3 py-2.5">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-[12.5px] font-medium text-[var(--fg)]">
+                            {t("local.importInstallToProject")}
+                          </div>
+                          <div className="mt-0.5 text-[11px] text-[var(--fg-muted)]">
+                            {t("local.importInstallToProject.desc")}
+                          </div>
+                        </div>
+                        <Switch isSelected={customProjectInstall} onChange={setCustomProjectInstall}>
+                          <Switch.Control>
+                            <Switch.Thumb />
+                          </Switch.Control>
+                        </Switch>
+                      </div>
+                      {customProjectInstall ? (
+                        <div className="mt-3 space-y-2">
+                          <div className="flex items-center gap-2">
+                            <input
+                              value={customProjectPath}
+                              onChange={(event) => setCustomProjectPath(event.target.value)}
+                              placeholder={t("install.projectRoot.placeholder")}
+                              className="min-w-0 flex-1 rounded-md border border-[var(--line)] bg-[var(--bg)] px-3 py-2 font-mono text-[12px] outline-none focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand-soft)]"
+                            />
+                            <Button size="sm" variant="outline" onPress={handleChooseProjectFolder}>
+                              <FolderOpen size={13} />
+                              {t("local.chooseFolder")}
+                            </Button>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {(tools.length ? tools.map((tool) => tool.id) : ["codex", "claude-code"]).map((runtime) => (
+                              <button
+                                key={runtime}
+                                type="button"
+                                onClick={() => setCustomProjectRuntime(runtime)}
+                                className={`rounded-md border px-2.5 py-1 text-[11.5px] transition-colors ${
+                                  customProjectRuntime === runtime
+                                    ? "border-[var(--brand)] bg-[var(--brand-soft)] text-[var(--brand-fg)]"
+                                    : "border-[var(--line)] text-[var(--fg-secondary)] hover:bg-[var(--bg-soft)]"
+                                }`}
+                              >
+                                {TOOL_LABELS[runtime] ?? runtime}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
 
@@ -455,6 +571,14 @@ export function MySkillsPage() {
                     ? disable.mutate({ skillId: skill.id, runtime })
                     : enable.mutate({ skillId: skill.id, runtime })
                 }
+                busyProjectDeploymentId={busyProjectDeploymentId}
+                deletingProjectDeploymentId={
+                  deleteProjectDeployment.isPending ? (deleteProjectDeployment.variables ?? null) : null
+                }
+                onToggleProjectDeployment={(deploymentId, enabled) =>
+                  toggleProjectDeployment.mutate({ deploymentId, enabled })
+                }
+                onDeleteProjectDeployment={(deploymentId) => deleteProjectDeployment.mutate(deploymentId)}
                 onRemove={() => remove.mutate(skill.id)}
                 removing={remove.isPending && remove.variables === skill.id}
                 onRetry={() => retry.mutate(skill)}
@@ -476,6 +600,7 @@ export function MySkillsPage() {
                   setPushPreview(null);
                   setPushOpen(true);
                 }}
+                pathOpeners={pathOpeners.data ?? []}
               />
             ))}
           </div>
@@ -494,11 +619,244 @@ function Stat({ label, value }: { label: string; value: number }) {
   );
 }
 
+function projectDisplayName(path: string): string {
+  const normalized = path.replace(/\\/g, "/").replace(/\/$/, "");
+  return normalized.split("/").filter(Boolean).pop() || path;
+}
+
+function sourceWorkspaceUrl(sourceWorkspace: string): string | null {
+  const value = sourceWorkspace.trim();
+  if (!value || value === "local" || !value.includes("/")) return null;
+  return `https://github.com/${value}`;
+}
+
+function SourceLink({ sourceWorkspace, sourceBranch }: { sourceWorkspace: string; sourceBranch: string }) {
+  const url = sourceWorkspaceUrl(sourceWorkspace);
+  const label = `${sourceWorkspace}${sourceBranch ? `@${sourceBranch}` : ""}`;
+  if (!url) {
+    return <div className="mt-1 truncate font-mono text-[11px] text-[var(--fg-muted)]">{label}</div>;
+  }
+  return (
+    <button
+      type="button"
+      className="mt-1 inline-flex max-w-full items-center gap-1 truncate font-mono text-[11px] text-[var(--fg-muted)] hover:text-[var(--brand)]"
+      onClick={() => void openExternalUrl(url)}
+    >
+      <span className="truncate">{label}</span>
+      <ExternalLink size={11} className="shrink-0" />
+    </button>
+  );
+}
+
+function OpenerIcon({
+  opener,
+  size = 16,
+  variant = "small",
+}: {
+  opener: PathOpener;
+  size?: number;
+  variant?: "small" | "default" | "large";
+}) {
+  const iconUrl = opener.iconUrls?.[variant] ?? opener.iconUrl;
+  if (iconUrl) {
+    return (
+      <img
+        src={iconUrl}
+        alt=""
+        draggable={false}
+        className="shrink-0 rounded-[4px]"
+        style={{ width: size, height: size }}
+      />
+    );
+  }
+  return null;
+}
+
+function PathOpenButton({ path, openers }: { path: string; openers: PathOpener[] }) {
+  const { t } = useLocale();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  const available = openers.length ? openers : [{ id: "default", label: t("mySkills.open"), appName: null }];
+  const primary = available[0];
+
+  useEffect(() => {
+    if (!open) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
+
+  const openWith = (opener: PathOpener) => {
+    setOpen(false);
+    void openLocalPath(path, opener.id).catch((err) =>
+      toast.danger(String((err as { message?: string })?.message ?? err)),
+    );
+  };
+
+  return (
+    <div ref={ref} className="relative flex shrink-0 items-center">
+      <button
+        type="button"
+        className="inline-flex h-7 w-10 items-center justify-center rounded-l-md border border-[var(--line)] bg-[var(--bg)] text-[var(--fg-secondary)] hover:bg-[var(--bg-soft)] hover:text-[var(--fg)]"
+        onClick={() => openWith(primary)}
+        title={`${t("mySkills.openWith")}: ${primary.label}`}
+        aria-label={`${t("mySkills.openWith")}: ${primary.label}`}
+      >
+        <OpenerIcon opener={primary} size={17} variant="small" />
+      </button>
+      <button
+        type="button"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-r-md border-y border-r border-[var(--line)] bg-[var(--bg)] text-[var(--fg-muted)] hover:bg-[var(--bg-soft)] hover:text-[var(--fg)]"
+        onClick={() => setOpen((value) => !value)}
+        aria-label={t("mySkills.openWith")}
+      >
+        <ChevronDown size={13} />
+      </button>
+      {open ? (
+        <div className="absolute right-0 top-8 z-20 min-w-[180px] overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--bg-elevated)] p-1 shadow-lg">
+          {available.map((opener) => (
+            <button
+              key={opener.id}
+              type="button"
+              className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12.5px] text-[var(--fg)] hover:bg-[var(--bg-soft)]"
+              onClick={() => openWith(opener)}
+            >
+              <OpenerIcon opener={opener} size={18} variant="small" />
+              {opener.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ProjectDeploymentRow({
+  deployment,
+  pathOpeners,
+  isToggling,
+  isDeleting,
+  onToggle,
+  onDelete,
+}: {
+  deployment: ManagedSkillProjectDeployment;
+  pathOpeners: PathOpener[];
+  isToggling: boolean;
+  isDeleting: boolean;
+  onToggle: (enabled: boolean) => void;
+  onDelete: () => void;
+}) {
+  const { t } = useLocale();
+  const toggleLabel = deployment.enabled ? t("mySkills.projectDisable") : t("mySkills.projectEnable");
+
+  return (
+    <div
+      className={cn(
+        "flex items-center justify-between gap-3 rounded-md border border-[var(--line)] bg-[var(--bg-elevated)] px-2.5 py-2",
+        !deployment.enabled && "bg-[var(--bg)]",
+      )}
+    >
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="truncate text-[12.5px] font-medium text-[var(--fg)]">
+            {projectDisplayName(deployment.projectRoot)}
+          </span>
+          <Pill mono>{TOOL_LABELS[deployment.runtime] ?? deployment.runtime}</Pill>
+          {!deployment.enabled ? <Pill>{t("mySkills.projectPaused")}</Pill> : null}
+          {deployment.enabled && deployment.status === "missing" ? (
+            <Pill tone="danger">{t("mySkills.projectMissing")}</Pill>
+          ) : deployment.enabled ? (
+            <Pill tone="success">{t("mySkills.projectActive")}</Pill>
+          ) : null}
+        </div>
+        <div className="mt-0.5 truncate font-mono text-[10.5px] text-[var(--fg-muted)]">
+          {deployment.targetPath}
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">
+        <Tooltip delay={150}>
+          <Switch
+            isSelected={deployment.enabled}
+            isDisabled={isToggling || isDeleting}
+            onChange={onToggle}
+            aria-label={toggleLabel}
+          >
+            <Switch.Control>
+              <Switch.Thumb />
+            </Switch.Control>
+          </Switch>
+          <Tooltip.Content>{toggleLabel}</Tooltip.Content>
+        </Tooltip>
+        <PathOpenButton
+          path={deployment.status === "missing" ? deployment.projectRoot : deployment.targetPath}
+          openers={pathOpeners}
+        />
+        <AlertDialog>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-[var(--fg-muted)] hover:text-[var(--danger)]"
+            isDisabled={isToggling || isDeleting}
+            aria-label={t("mySkills.projectRemove")}
+          >
+            <Trash2 size={14} />
+          </Button>
+          <AlertDialog.Backdrop>
+            <AlertDialog.Container size="sm">
+              <AlertDialog.Dialog className="sm:max-w-[420px]">
+                <AlertDialog.CloseTrigger />
+                <AlertDialog.Header>
+                  <AlertDialog.Icon status="danger" />
+                  <AlertDialog.Heading>{t("mySkills.projectRemoveTitle")}</AlertDialog.Heading>
+                </AlertDialog.Header>
+                <AlertDialog.Body>
+                  <div className="space-y-2 text-[13px] leading-[1.5] text-[var(--fg-secondary)]">
+                    <p>{t("mySkills.projectRemoveDesc")}</p>
+                    <div className="rounded-md border border-[var(--line)] bg-[var(--bg-soft)] px-3 py-2">
+                      <div className="truncate font-medium text-[var(--fg)]">
+                        {projectDisplayName(deployment.projectRoot)}
+                      </div>
+                      <div className="mt-0.5 truncate font-mono text-[11px] text-[var(--fg-muted)]">
+                        {deployment.targetPath}
+                      </div>
+                    </div>
+                  </div>
+                </AlertDialog.Body>
+                <AlertDialog.Footer>
+                  <Button slot="close" variant="outline">
+                    {t("common.cancel")}
+                  </Button>
+                  <Button slot="close" variant="danger-soft" onPress={onDelete} isPending={isDeleting}>
+                    {t("mySkills.projectRemoveConfirm")}
+                  </Button>
+                </AlertDialog.Footer>
+              </AlertDialog.Dialog>
+            </AlertDialog.Container>
+          </AlertDialog.Backdrop>
+        </AlertDialog>
+      </div>
+    </div>
+  );
+}
+
 function SkillCard({
   skill,
   tools,
   busyRuntimeKey,
   onToggle,
+  busyProjectDeploymentId,
+  deletingProjectDeploymentId,
+  onToggleProjectDeployment,
+  onDeleteProjectDeployment,
   onRemove,
   removing,
   onRetry,
@@ -507,11 +865,16 @@ function SkillCard({
   reviewing,
   aiConfigured,
   onPush,
+  pathOpeners,
 }: {
   skill: ManagedSkill;
   tools: string[];
   busyRuntimeKey: string | null;
   onToggle: (runtime: string, currentlyEnabled: boolean) => void;
+  busyProjectDeploymentId: number | null;
+  deletingProjectDeploymentId: number | null;
+  onToggleProjectDeployment: (deploymentId: number, enabled: boolean) => void;
+  onDeleteProjectDeployment: (deploymentId: number) => void;
   onRemove: () => void;
   removing: boolean;
   onRetry: () => void;
@@ -520,15 +883,16 @@ function SkillCard({
   reviewing: boolean;
   aiConfigured: boolean;
   onPush: () => void;
+  pathOpeners: PathOpener[];
 }) {
   const { t } = useLocale();
-  const [confirmRemove, setConfirmRemove] = useState(false);
   const [showFindings, setShowFindings] = useState(false);
   const [autoUpdate, setAutoUpdate] = useLocalStorage<boolean>(`my-skills:auto:${skill.id}`, true);
 
   const isDownloading = skill.installStatus === "downloading";
   const isError = skill.installStatus === "error";
   const hasReview = skill.reviewVerdict !== "";
+  const projectDeployments = skill.projectDeployments ?? [];
 
   return (
     <Card className="p-4">
@@ -553,78 +917,98 @@ function SkillCard({
             <div className="mt-0.5 line-clamp-2 text-[12.5px] text-[var(--fg-secondary)]">{skill.description}</div>
           ) : null}
           {skill.sourceWorkspace ? (
-            <div className="mt-1 truncate font-mono text-[11px] text-[var(--fg-muted)]">
-              ← {skill.sourceWorkspace}{skill.sourceBranch ? `@${skill.sourceBranch}` : ""}
-            </div>
+            <SourceLink sourceWorkspace={skill.sourceWorkspace} sourceBranch={skill.sourceBranch} />
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          {confirmRemove ? (
-            <>
-              <Button size="sm" variant="outline" onPress={() => setConfirmRemove(false)}>
-                {t("common.cancel")}
-              </Button>
-              <Button size="sm" variant="danger-soft" onPress={onRemove} isPending={removing}>
-                {t("mySkills.remove.confirm")}
-              </Button>
-            </>
-          ) : (
-            <>
-              {!isDownloading && !isError ? (
-                <Tooltip delay={150}>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className={
-                      hasReview
-                        ? "text-[var(--fg-muted)] hover:text-[var(--brand)]"
-                        : "text-[var(--fg-muted)] hover:text-[var(--brand)]"
-                    }
-                    isDisabled={!aiConfigured || reviewing}
-                    onPress={onReview}
-                  >
-                    {reviewing ? (
-                      <Spinner size="sm" />
-                    ) : skill.reviewVerdict === "danger" ? (
-                      <ShieldAlert size={14} className="text-[var(--danger)]" />
-                    ) : skill.reviewVerdict === "caution" ? (
-                      <ShieldAlert size={14} className="text-[var(--warning)]" />
-                    ) : skill.reviewVerdict === "safe" ? (
-                      <ShieldCheck size={14} className="text-[var(--success)]" />
-                    ) : (
-                      <ShieldCheck size={14} />
-                    )}
-                  </Button>
-                  <Tooltip.Content>
-                    {!aiConfigured
-                      ? t("mySkills.aiNotConfigured")
-                      : hasReview
-                        ? t("mySkills.rereview")
-                        : t("mySkills.review")}
-                  </Tooltip.Content>
-                </Tooltip>
-              ) : null}
-              <Tooltip delay={150}>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="text-[var(--fg-muted)] hover:text-[var(--brand)]"
-                  onPress={onPush}
-                >
-                  <GitPullRequestArrow size={14} />
-                </Button>
-                <Tooltip.Content>{t("local.pushToWorkspace")}</Tooltip.Content>
-              </Tooltip>
+          {!isDownloading && !isError ? (
+            <Tooltip delay={150}>
               <Button
                 size="sm"
                 variant="ghost"
-                className="text-[var(--fg-muted)] hover:text-[var(--danger)]"
-                onPress={() => setConfirmRemove(true)}
+                className={
+                  hasReview
+                    ? "text-[var(--fg-muted)] hover:text-[var(--brand)]"
+                    : "text-[var(--fg-muted)] hover:text-[var(--brand)]"
+                }
+                isDisabled={!aiConfigured || reviewing}
+                onPress={onReview}
               >
-                <Trash2 size={14} />
+                {reviewing ? (
+                  <Spinner size="sm" />
+                ) : skill.reviewVerdict === "danger" ? (
+                  <ShieldAlert size={14} className="text-[var(--danger)]" />
+                ) : skill.reviewVerdict === "caution" ? (
+                  <ShieldAlert size={14} className="text-[var(--warning)]" />
+                ) : skill.reviewVerdict === "safe" ? (
+                  <ShieldCheck size={14} className="text-[var(--success)]" />
+                ) : (
+                  <ShieldCheck size={14} />
+                )}
               </Button>
-            </>
-          )}
+              <Tooltip.Content>
+                {!aiConfigured
+                  ? t("mySkills.aiNotConfigured")
+                  : hasReview
+                    ? t("mySkills.rereview")
+                    : t("mySkills.review")}
+              </Tooltip.Content>
+            </Tooltip>
+          ) : null}
+          <Tooltip delay={150}>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-[var(--fg-muted)] hover:text-[var(--brand)]"
+              onPress={onPush}
+            >
+              <GitPullRequestArrow size={14} />
+            </Button>
+            <Tooltip.Content>{t("local.pushToWorkspace")}</Tooltip.Content>
+          </Tooltip>
+          <AlertDialog>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-[var(--fg-muted)] hover:text-[var(--danger)]"
+              isDisabled={removing}
+              aria-label={t("mySkills.remove")}
+            >
+              <Trash2 size={14} />
+            </Button>
+            <AlertDialog.Backdrop>
+              <AlertDialog.Container size="sm">
+                <AlertDialog.Dialog className="sm:max-w-[420px]">
+                  <AlertDialog.CloseTrigger />
+                  <AlertDialog.Header>
+                    <AlertDialog.Icon status="danger" />
+                    <AlertDialog.Heading>{t("mySkills.removeTitle")}</AlertDialog.Heading>
+                  </AlertDialog.Header>
+                  <AlertDialog.Body>
+                    <div className="space-y-2 text-[13px] leading-[1.5] text-[var(--fg-secondary)]">
+                      <p>{t("mySkills.removeDesc")}</p>
+                      <div className="rounded-md border border-[var(--line)] bg-[var(--bg-soft)] px-3 py-2">
+                        <div className="truncate font-medium text-[var(--fg)]">{skill.name}</div>
+                        {skill.localPath ? (
+                          <div className="mt-0.5 truncate font-mono text-[11px] text-[var(--fg-muted)]">
+                            {skill.localPath}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  </AlertDialog.Body>
+                  <AlertDialog.Footer>
+                    <Button slot="close" variant="outline">
+                      {t("common.cancel")}
+                    </Button>
+                    <Button slot="close" variant="danger-soft" onPress={onRemove} isPending={removing}>
+                      {t("mySkills.remove.confirm")}
+                    </Button>
+                  </AlertDialog.Footer>
+                </AlertDialog.Dialog>
+              </AlertDialog.Container>
+            </AlertDialog.Backdrop>
+          </AlertDialog>
         </div>
       </div>
 
@@ -689,6 +1073,29 @@ function SkillCard({
               );
             })}
           </div>
+
+          {projectDeployments.length ? (
+            <div className="mt-3 rounded-md border border-[var(--line)] bg-[var(--bg-soft)] px-3 py-2.5">
+              <div className="mb-2 flex items-center gap-2 text-[12px] font-medium text-[var(--fg-secondary)]">
+                <FolderOpen size={13} className="text-[var(--fg-muted)]" />
+                {t("mySkills.projects")}
+                <Pill>{projectDeployments.length}</Pill>
+              </div>
+              <div className="space-y-1.5">
+                {projectDeployments.map((deployment) => (
+                  <ProjectDeploymentRow
+                    key={deployment.id}
+                    deployment={deployment}
+                    pathOpeners={pathOpeners}
+                    isToggling={busyProjectDeploymentId === deployment.id}
+                    isDeleting={deletingProjectDeploymentId === deployment.id}
+                    onToggle={(enabled) => onToggleProjectDeployment(deployment.id, enabled)}
+                    onDelete={() => onDeleteProjectDeployment(deployment.id)}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           {/* AI review result (cached) — verdict summary + expandable findings. */}
           {hasReview ? (

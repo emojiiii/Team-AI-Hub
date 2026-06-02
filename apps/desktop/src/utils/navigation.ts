@@ -39,42 +39,6 @@ export const pageCopyKeys: Record<AppPage, { titleKey: string; subtitleKey: stri
   cli: { titleKey: "page.cli.title", subtitleKey: "page.cli.subtitle" },
 };
 
-/** @deprecated Use pageCopyKeys + t() instead. Kept for backward compat during migration. */
-export const pageCopy: Record<AppPage, { title: string; subtitle: string }> = {
-  discover: {
-    title: "Discover",
-    subtitle: "Find skills and add them to your AI tools.",
-  },
-  mySkills: {
-    title: "My skills",
-    subtitle: "Skills you've added, synced across your AI tools.",
-  },
-  workspaces: {
-    title: "Skills",
-    subtitle: "Browse, subscribe, and inspect skills in the active workspace.",
-  },
-  publish: {
-    title: "Publish",
-    subtitle: "Track publish PRs, policy checks, review gates, and auto-merge outcomes.",
-  },
-  invitations: {
-    title: "Members",
-    subtitle: "Invite collaborators and complete onboarding.",
-  },
-  subscriptions: {
-    title: "Subscriptions",
-    subtitle: "Review your subscription declarations and update strategy.",
-  },
-  activity: {
-    title: "Activity",
-    subtitle: "Review provider webhook updates and sync polling inputs.",
-  },
-  cli: {
-    title: "CLI",
-    subtitle: "Run local-first Team AI Hub workflows from the Rust CLI.",
-  },
-};
-
 /**
  * Static path for each workspace-scoped page. Since this is a desktop app the
  * workspace identity lives in global state (appStore.selectedWorkspace), NOT in
@@ -89,7 +53,6 @@ export const workspacePagePath: Record<string, AppPage> = {
 
 export interface NavRoute {
   page: AppPage;
-  label: string;
   /** Whether this page needs a selected workspace (vs. a personal page). */
   scope: "workspace" | "personal";
   /** Static route path. */
@@ -97,14 +60,14 @@ export interface NavRoute {
 }
 
 export const navRoutes: NavRoute[] = [
-  { page: "discover", label: "Discover", scope: "personal", path: "/discover" },
-  { page: "mySkills", label: "My skills", scope: "personal", path: "/my-skills" },
-  { page: "workspaces", label: "Skills", scope: "workspace", path: "/skills" },
-  { page: "publish", label: "Publish PRs", scope: "workspace", path: "/publish" },
-  { page: "invitations", label: "Members", scope: "workspace", path: "/members" },
-  { page: "activity", label: "Activity", scope: "workspace", path: "/activity" },
-  { page: "subscriptions", label: "Subscriptions", scope: "personal", path: "/subscriptions" },
-  { page: "cli", label: "CLI", scope: "personal", path: "/cli" },
+  { page: "discover", scope: "personal", path: "/discover" },
+  { page: "mySkills", scope: "personal", path: "/my-skills" },
+  { page: "workspaces", scope: "workspace", path: "/skills" },
+  { page: "publish", scope: "workspace", path: "/publish" },
+  { page: "invitations", scope: "workspace", path: "/members" },
+  { page: "activity", scope: "workspace", path: "/activity" },
+  { page: "subscriptions", scope: "personal", path: "/subscriptions" },
+  { page: "cli", scope: "personal", path: "/cli" },
 ];
 
 /** Build the path for a nav route. All routes are now static. */

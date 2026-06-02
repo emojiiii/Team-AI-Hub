@@ -19,10 +19,16 @@ import type { MDXEditorMethods } from "@mdxeditor/editor";
 export function MarkdownEditor({
   initialValue,
   onChange,
+  onBaselineChange,
+  baselineResetKey = 0,
+  baselineResetValue,
   onDirtyChange,
 }: {
   initialValue: string;
   onChange?: (value: string) => void;
+  onBaselineChange?: (value: string) => void;
+  baselineResetKey?: number;
+  baselineResetValue?: string | null;
   /**
    * Reports whether the editor content differs from its own normalized
    * baseline. This is the correct dirty signal: MDXEditor re-serializes
@@ -34,46 +40,52 @@ export function MarkdownEditor({
   onDirtyChange?: (dirty: boolean) => void;
 }) {
   const editorRef = useRef<MDXEditorMethods>(null);
-  // Only forward onChange after the user has actually typed/pasted in the editor.
-  // MDXEditor normalizes markdown on init/setMarkdown which triggers onChange with
-  // content that differs from the original — we must ignore those spurious events.
-  const userEditedRef = useRef(false);
   // The editor's own normalized rendering of the current initialValue. Set on
   // the first onChange after (re)load; dirty is measured against this.
   const baselineRef = useRef<string | null>(null);
 
   // Reset flags when content is externally replaced (file switch, refresh, etc.)
   useEffect(() => {
-    userEditedRef.current = false;
     baselineRef.current = null;
     onDirtyChange?.(false);
     if (editorRef.current) {
       editorRef.current.setMarkdown(initialValue);
     }
-  }, [initialValue, onDirtyChange]);
+    const timer = window.setTimeout(() => {
+      const baseline = editorRef.current?.getMarkdown() ?? initialValue;
+      baselineRef.current = baseline;
+      onBaselineChange?.(baseline);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [initialValue, onBaselineChange, onDirtyChange]);
+
+  useEffect(() => {
+    if (!baselineResetKey) return;
+    const baseline = baselineResetValue ?? editorRef.current?.getMarkdown() ?? initialValue;
+    baselineRef.current = baseline;
+    onBaselineChange?.(baseline);
+    onDirtyChange?.(false);
+  }, [baselineResetKey, baselineResetValue, initialValue, onBaselineChange, onDirtyChange]);
 
   const handleChange = useCallback(
     (val: string) => {
       // Capture the editor's normalized baseline on the first change event
-      // (fired by the initial setMarkdown), before the user has edited.
+      // (fired by the initial setMarkdown), before comparing user edits.
       if (baselineRef.current === null) {
         baselineRef.current = val;
+        onBaselineChange?.(val);
+        onDirtyChange?.(false);
+        return;
       }
-      if (!userEditedRef.current) return;
+      const dirty = val !== baselineRef.current;
       onChange?.(val);
-      onDirtyChange?.(val !== baselineRef.current);
+      onDirtyChange?.(dirty);
     },
-    [onChange, onDirtyChange],
+    [onBaselineChange, onChange, onDirtyChange],
   );
 
-  // onInput fires only on real user input (typing, pasting, IME) in contenteditable,
-  // NOT on programmatic DOM updates from ProseMirror/MDXEditor.
-  const handleInput = useCallback(() => {
-    userEditedRef.current = true;
-  }, []);
-
   return (
-    <div className="mdx-editor-wrapper" onInputCapture={handleInput}>
+    <div className="mdx-editor-wrapper">
       <MDXEditor
         ref={editorRef}
         markdown={initialValue}

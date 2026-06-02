@@ -126,11 +126,7 @@ impl Default for TeamAIConfig {
     fn default() -> Self {
         Self {
             api_base_url: "http://localhost:8787".to_owned(),
-            default_targets: vec![
-                "claude-code".to_owned(),
-                "cursor".to_owned(),
-                "codex".to_owned(),
-            ],
+            default_targets: vec!["claude-code".to_owned(), "codex".to_owned()],
         }
     }
 }

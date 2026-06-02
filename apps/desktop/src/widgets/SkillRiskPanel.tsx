@@ -22,7 +22,7 @@ import {
 } from "../lib/review";
 import { useLocale } from "../hooks/useLocale";
 import { useTheme } from "../hooks/useTheme";
-import { effectiveRisk, riskLabel } from "../utils/risk";
+import { effectiveRisk } from "../utils/risk";
 import { formatError } from "../utils/format";
 import { Card } from "./Card";
 import { Pill, type PillTone } from "./Pill";
@@ -228,7 +228,7 @@ export function SkillRiskPanel({
             </div>
             <div className="mt-1 flex min-w-0 items-center gap-2">
               <span className="text-[20px] font-semibold tracking-tight">
-                {displayReview ? t(`risk.verdict.${displayReview.verdict}`) : riskLabel[risk]}
+                {displayReview ? t(`risk.verdict.${displayReview.verdict}`) : t(`risk.level.${risk}`)}
               </span>
               {displayReview ? (
                 <Pill tone={verdictTone[displayReview.verdict] ?? "default"}>

@@ -50,6 +50,19 @@
   --code-bg: #0f172a;
   --code-fg: #e2e8f0;
 
+  /* Diff surfaces follow the active app theme. */
+  --diff-bg: var(--bg-elevated);
+  --diff-fg: var(--fg);
+  --diff-muted: var(--fg-muted);
+  --diff-line-border: color-mix(in oklab, var(--line) 78%, transparent);
+  --diff-minimap-bg: color-mix(in oklab, var(--fg-muted) 14%, transparent);
+  --diff-add-bg: color-mix(in oklab, var(--success) 18%, transparent);
+  --diff-add-fg: color-mix(in oklab, var(--success) 78%, var(--fg));
+  --diff-remove-bg: color-mix(in oklab, var(--danger) 16%, transparent);
+  --diff-remove-fg: color-mix(in oklab, var(--danger) 78%, var(--fg));
+  --diff-hunk-bg: color-mix(in oklab, var(--brand) 12%, transparent);
+  --diff-hunk-fg: color-mix(in oklab, var(--brand) 72%, var(--fg));
+
   /* Misc — keep app's own radius/shadow scale (HeroUI's --radius is 0.5rem == 8px) */
   --radius-lg: 12px;
   --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.04);
@@ -63,6 +76,18 @@
   --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.2);
   --shadow-md: 0 4px 12px -4px rgb(0 0 0 / 0.4), 0 0 0 1px rgb(255 255 255 / 0.04);
   --shadow-popover: 0 10px 32px -8px rgb(0 0 0 / 0.6), 0 0 0 1px rgb(255 255 255 / 0.06);
+
+  --diff-bg: color-mix(in oklab, var(--bg) 88%, black);
+  --diff-fg: color-mix(in oklab, var(--fg) 88%, white);
+  --diff-muted: color-mix(in oklab, var(--fg-muted) 82%, white);
+  --diff-line-border: color-mix(in oklab, var(--line) 72%, transparent);
+  --diff-minimap-bg: color-mix(in oklab, var(--fg-muted) 18%, transparent);
+  --diff-add-bg: color-mix(in oklab, var(--success) 26%, transparent);
+  --diff-add-fg: color-mix(in oklab, var(--success) 78%, white);
+  --diff-remove-bg: color-mix(in oklab, var(--danger) 26%, transparent);
+  --diff-remove-fg: color-mix(in oklab, var(--danger) 78%, white);
+  --diff-hunk-bg: color-mix(in oklab, var(--brand) 24%, transparent);
+  --diff-hunk-fg: color-mix(in oklab, var(--brand) 74%, white);
 }
 
 /* ---------- Accent overrides ---------- */
@@ -1291,8 +1316,9 @@ a[class*="text-white"] {
   max-height: 280px;
   overflow: auto;
   border-radius: 0 0 var(--radius) var(--radius);
-  background: #0c1220;
-  color: #cbd5e1;
+  background: var(--diff-bg);
+  color: var(--diff-fg);
+  box-shadow: inset 0 0 0 1px var(--diff-line-border);
   margin: 0;
   padding: 12px 14px;
   font-family: "SFMono-Regular", "JetBrains Mono", ui-monospace, monospace;
@@ -1308,22 +1334,120 @@ a[class*="text-white"] {
 }
 
 .diff-line--added {
-  background: rgba(46, 160, 67, 0.15);
-  color: #3fb950;
+  background: var(--diff-add-bg);
+  color: var(--diff-add-fg);
 }
 
 .diff-line--removed {
-  background: rgba(248, 81, 73, 0.15);
-  color: #f85149;
+  background: var(--diff-remove-bg);
+  color: var(--diff-remove-fg);
 }
 
 .diff-line--hunk {
-  background: rgba(56, 139, 253, 0.1);
-  color: #58a6ff;
+  background: var(--diff-hunk-bg);
+  color: var(--diff-hunk-fg);
 }
 
 .diff-line__content {
   display: inline;
+}
+
+.publish-diff-line {
+  display: grid;
+  grid-template-columns: 48px 48px 22px minmax(0, 1fr);
+  height: 22px;
+  color: var(--diff-fg);
+  white-space: pre;
+}
+
+.publish-diff-viewport {
+  position: relative;
+  max-height: min(680px, calc(100vh - 260px));
+  overflow: auto;
+  background: var(--diff-bg);
+}
+
+.publish-diff-lines {
+  position: relative;
+  min-width: max-content;
+  padding-block: 8px;
+  padding-right: 28px;
+  font-family: "SFMono-Regular", "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 22px;
+}
+
+.publish-diff-minimap {
+  position: sticky;
+  right: 8px;
+  top: 8px;
+  float: right;
+  width: 12px;
+  height: min(180px, calc(100% - 16px));
+  min-height: 92px;
+  margin-top: 8px;
+  border-radius: 999px;
+  background: var(--diff-minimap-bg);
+  box-shadow: inset 0 0 0 1px var(--diff-line-border);
+  cursor: pointer;
+  z-index: 2;
+}
+
+.publish-diff-minimap__marker {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  height: 2px;
+  border-radius: 999px;
+}
+
+.publish-diff-minimap__marker--add {
+  background: var(--success);
+}
+
+.publish-diff-minimap__marker--remove {
+  background: var(--danger);
+}
+
+.publish-diff-minimap__marker--hunk {
+  background: var(--brand);
+}
+
+.publish-diff-line__no {
+  user-select: none;
+  border-right: 1px solid var(--diff-line-border);
+  padding: 0 8px;
+  text-align: right;
+  color: var(--diff-muted);
+}
+
+.publish-diff-line__prefix {
+  user-select: none;
+  padding-left: 8px;
+  color: var(--diff-muted);
+}
+
+.publish-diff-line__content {
+  padding-right: 18px;
+}
+
+.publish-diff-line--add {
+  background: var(--diff-add-bg);
+  color: var(--diff-add-fg);
+}
+
+.publish-diff-line--remove {
+  background: var(--diff-remove-bg);
+  color: var(--diff-remove-fg);
+}
+
+.publish-diff-line--hunk {
+  background: var(--diff-hunk-bg);
+  color: var(--diff-hunk-fg);
+}
+
+.publish-diff-line--meta {
+  color: var(--diff-muted);
 }
 
 .markdown-preview {

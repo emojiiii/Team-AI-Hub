@@ -9,9 +9,9 @@ export type Channel = "stable" | "beta";
 
 const targets = [
   { id: "claude-code", label: "Claude Code", desc: "~/.claude/skills" },
-  { id: "cursor", label: "Cursor", desc: "~/.cursor/skills" },
-  { id: "codex", label: "Codex", desc: "~/.codex/skills" },
+  { id: "codex", label: "Codex", desc: "~/.agents/skills" },
 ];
+const targetIds = new Set(targets.map((target) => target.id));
 
 const policies: Array<{ id: UpdatePolicy; labelKey: string; descKey: string }> = [
   { id: "auto-patch", labelKey: "subscribe.policy.autoPatch", descKey: "subscribe.policy.autoPatch.desc" },
@@ -19,6 +19,10 @@ const policies: Array<{ id: UpdatePolicy; labelKey: string; descKey: string }> =
   { id: "manual", labelKey: "subscribe.policy.manual", descKey: "subscribe.policy.manual.desc" },
   { id: "pin", labelKey: "subscribe.policy.pin", descKey: "subscribe.policy.pin.desc" },
 ];
+
+function normalizeTargets(values: string[]): string[] {
+  return values.filter((value, index) => targetIds.has(value) && values.indexOf(value) === index);
+}
 
 export function SubscribeModal({
   open,
@@ -45,7 +49,7 @@ export function SubscribeModal({
     if (open) {
       // Tools default to OFF; selecting none is allowed (downloads without
       // deploying to any tool).
-      setSelected(initialTargets);
+      setSelected(normalizeTargets(initialTargets));
       setPolicy("auto-patch");
     }
   }, [open, initialTargets]);

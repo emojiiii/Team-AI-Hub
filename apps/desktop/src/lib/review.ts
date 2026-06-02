@@ -1,6 +1,8 @@
 import type { AiReviewFinding } from "./teamai";
 import type { ReviewCacheEntry } from "./workspaceCache";
 
+export { formatRelativeTime } from "../utils/format";
+
 export type ReviewVerdict = ReviewCacheEntry["verdict"];
 
 export function isVerdict(value: unknown): value is ReviewVerdict {
@@ -70,19 +72,6 @@ export function stringifyRemoteReview(entry: ReviewCacheEntry): string {
     null,
     2,
   )}\n`;
-}
-
-export function formatRelativeTime(value: string, locale: string): string {
-  const time = Date.parse(value);
-  if (!Number.isFinite(time)) return locale === "zh" ? "刚刚" : "just now";
-  const diffMs = Date.now() - time;
-  const minutes = Math.max(0, Math.floor(diffMs / 60_000));
-  if (minutes < 1) return locale === "zh" ? "刚刚" : "just now";
-  if (minutes < 60) return locale === "zh" ? `${minutes} 分钟前` : `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return locale === "zh" ? `${hours} 小时前` : `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return locale === "zh" ? `${days} 天前` : `${days}d ago`;
 }
 
 /**

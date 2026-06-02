@@ -140,10 +140,22 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Check GitHub OAuth client id for release builds
+        if: ${{ needs.metadata.outputs.isRelease == 'true' }}
+        env:
+          CLIENT_ID: ${{ vars.CLIENT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLIENT_ID:-}" ]; then
+            echo "::error::Set the CLIENT_ID repository variable before publishing release builds."
+            exit 1
+          fi
+
       - name: Build Tauri bundles
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLIENT_ID: ${{ vars.CLIENT_ID }}
         with:
           projectPath: apps/desktop
           tauriScript: pnpm tauri

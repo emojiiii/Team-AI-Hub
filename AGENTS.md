@@ -138,6 +138,8 @@ Tauri bundle artifacts are uploaded by `tauri-apps/tauri-action`. Additional por
 
 Builds run on pushes to `main`, pull requests targeting `main`, and manual dispatches. Every artifact name includes the resolved app version.
 
+GitHub OAuth login is configured by `CLIENT_ID`. Keep `.env` local-only for development; GitHub release builds read `CLIENT_ID` from repository Variables and bake it into the desktop binary at compile time. Push-to-`main` release builds fail fast if `CLIENT_ID` is missing, so a release is not published with broken sign-in.
+
 Version source of truth is checked at workflow start. These files must agree before publishing:
 
 - `apps/desktop/package.json`

@@ -5736,17 +5736,17 @@ fn resolve_github_client_id(client_id: Option<String>) -> CommandResult<String> 
     // Three-tier resolution so end users never need to know about client IDs:
     //   1. explicit override from the UI (used in development / advanced flows)
     //   2. runtime env var (lets ops swap the OAuth app without rebuilding)
-    //   3. compile-time default baked in via `SKILL_LIBRARY_GITHUB_CLIENT_ID`
-    let baked = option_env!("SKILL_LIBRARY_GITHUB_CLIENT_ID").map(str::to_owned);
+    //   3. compile-time default baked in via `CLIENT_ID`
+    let baked = option_env!("CLIENT_ID").map(str::to_owned);
     let value = client_id
-        .or_else(|| std::env::var("GITHUB_CLIENT_ID").ok())
+        .or_else(|| std::env::var("CLIENT_ID").ok())
         .or(baked)
         .unwrap_or_default();
     let trimmed = value.trim().to_owned();
     if trimmed.is_empty() {
         return Err(CommandError::coded(
             "missing_github_client_id",
-            "Skill Library is not configured for GitHub sign-in. Build with SKILL_LIBRARY_GITHUB_CLIENT_ID set, or export GITHUB_CLIENT_ID before launching.",
+            "Skill Library is not configured for GitHub sign-in. Build with CLIENT_ID set, or export CLIENT_ID before launching.",
         ));
     }
     Ok(trimmed)
@@ -5871,7 +5871,7 @@ fn humanize_agent_dir_name(value: &str) -> String {
 }
 
 pub fn run() {
-    // Load .env file(s) so GITHUB_CLIENT_ID and other vars are available at runtime.
+    // Load .env file(s) so CLIENT_ID and other vars are available at runtime.
     // Silently ignore if no .env exists (e.g. production builds with baked-in values).
     let _ = dotenvy::dotenv();
 

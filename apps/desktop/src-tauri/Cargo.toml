@@ -39,4 +39,4 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 tokio.workspace = true
-genai = "0.6.3"
+genai = "0.6.4"

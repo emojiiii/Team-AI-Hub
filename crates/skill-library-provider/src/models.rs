@@ -22,6 +22,8 @@ pub struct Workspace {
     pub provider: String,
     pub owner: String,
     pub repo: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_id: Option<String>,
     pub full_name: String,
     pub default_branch: String,
     pub visibility: String,

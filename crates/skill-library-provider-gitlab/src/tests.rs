@@ -101,6 +101,51 @@ async fn get_source_encodes_nested_namespace() {
 }
 
 #[tokio::test]
+async fn list_sources_allows_missing_visibility_from_simple_projects() {
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("GET", "/api/v4/projects")
+        .match_query(Matcher::AllOf(vec![
+            Matcher::UrlEncoded("membership".into(), "true".into()),
+            Matcher::UrlEncoded("simple".into(), "true".into()),
+            Matcher::UrlEncoded("order_by".into(), "last_activity_at".into()),
+            Matcher::UrlEncoded("sort".into(), "desc".into()),
+            Matcher::UrlEncoded("per_page".into(), "100".into()),
+            Matcher::UrlEncoded("page".into(), "1".into()),
+        ]))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"[
+                {
+                    "id": 4833,
+                    "path": "hgbaseservice-ios",
+                    "path_with_namespace": "apps/hago/hgbaseservice-ios",
+                    "default_branch": "main",
+                    "web_url": "https://gitlab.example/apps/hago/hgbaseservice-ios"
+                }
+            ]"#,
+        )
+        .create_async()
+        .await;
+    let provider = GitLabProvider::anonymous(format!("{}/api/v4", server.url())).unwrap();
+
+    let page = provider
+        .list_sources(skill_library_provider::PageOpts {
+            cursor: None,
+            per_page: Some(100),
+        })
+        .await
+        .unwrap();
+
+    mock.assert_async().await;
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].full_name, "apps/hago/hgbaseservice-ios");
+    assert_eq!(page.items[0].remote_id.as_deref(), Some("4833"));
+    assert_eq!(page.items[0].visibility, "private");
+}
+
+#[tokio::test]
 async fn list_files_maps_recursive_tree_entries() {
     let mut server = mockito::Server::new_async().await;
     let project = server

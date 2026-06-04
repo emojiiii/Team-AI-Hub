@@ -263,6 +263,7 @@ fn webdav_workspace(provider: &str, path: &str, html_url: Option<String>) -> Wor
         provider: provider.to_owned(),
         owner,
         repo,
+        remote_id: Some(path.clone()),
         full_name: path,
         default_branch: "latest".to_owned(),
         visibility: "private".to_owned(),

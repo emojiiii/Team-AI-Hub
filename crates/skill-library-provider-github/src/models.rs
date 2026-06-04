@@ -534,6 +534,7 @@ impl From<RepoResponse> for Workspace {
             provider: "github.com".to_owned(),
             owner: repo.owner.login,
             repo: repo.name,
+            remote_id: None,
             full_name: repo.full_name,
             default_branch: repo.default_branch,
             visibility: if repo.private { "private" } else { "public" }.to_owned(),

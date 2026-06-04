@@ -83,7 +83,7 @@ export function ConsumerSkillCard({
               e.stopPropagation();
               onInstall();
             }}
-            className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full bg-[var(--brand)] px-3.5 py-2 text-[12.5px] font-medium text-[var(--accent-foreground)] shadow-md transition-transform hover:scale-[1.03] active:scale-95"
+            className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full bg-[var(--brand)] px-3.5 py-2 text-[12.5px] font-medium text-[var(--brand-solid-fg)] shadow-md transition-transform hover:scale-[1.03] active:scale-95"
           >
             <Download size={14} />
             {t("discover.installShort")}

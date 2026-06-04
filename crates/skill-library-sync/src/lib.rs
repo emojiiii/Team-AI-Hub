@@ -256,6 +256,8 @@ pub struct StoredWorkspace {
     pub provider: String,
     pub owner: String,
     pub repo: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_id: Option<String>,
     pub full_name: String,
     pub default_branch: String,
     pub visibility: String,
@@ -308,7 +310,7 @@ impl StoredWorkspace {
             provider: self.provider.clone(),
             owner: self.owner.clone(),
             repo: self.repo.clone(),
-            remote_id: None,
+            remote_id: self.remote_id.clone(),
         }
     }
 }
@@ -319,6 +321,7 @@ impl From<Workspace> for StoredWorkspace {
             provider: workspace.provider,
             owner: workspace.owner,
             repo: workspace.repo,
+            remote_id: workspace.remote_id,
             full_name: workspace.full_name,
             default_branch: workspace.default_branch,
             visibility: workspace.visibility,
@@ -1041,7 +1044,7 @@ async fn latest_version_for_subscription(
     asset_id: &str,
     token: Option<&str>,
 ) -> Result<String> {
-    let credential = credential_from_token(workspace, token);
+    let credential = credential_for_workspace(paths, workspace, token)?;
     let handles = provider_factory::ProviderFactory::from_config_path(&paths.config)?
         .build(workspace, credential.as_ref())?;
     if let Some(git) = handles.git.as_ref() {
@@ -1195,17 +1198,14 @@ async fn download_skill_source(
     version: &str,
     token: Option<&str>,
 ) -> Result<DownloadedSkillSource> {
-    let credential = credential_from_token(workspace, token);
+    let credential = credential_for_workspace(paths, workspace, token)?;
     let handles = provider_factory::ProviderFactory::from_config_path(&paths.config)?
         .build(workspace, credential.as_ref())?;
+    let allow_api_resolution = credential
+        .as_ref()
+        .is_some_and(|credential| !credential.token.trim().is_empty());
     let refs = if let Some(git) = handles.git.as_ref() {
-        download_ref_candidates(
-            git.as_ref(),
-            workspace,
-            version,
-            token.is_some_and(|token| !token.trim().is_empty()),
-        )
-        .await?
+        download_ref_candidates(git.as_ref(), workspace, version, allow_api_resolution).await?
     } else {
         non_git_ref_candidates(version)
     };
@@ -1295,17 +1295,14 @@ pub async fn download_skill_for_install<F>(
 where
     F: FnMut(u64, Option<u64>) + Send,
 {
-    let credential = credential_from_token(workspace, token);
+    let credential = credential_for_workspace(paths, workspace, token)?;
     let handles = provider_factory::ProviderFactory::from_config_path(&paths.config)?
         .build(workspace, credential.as_ref())?;
+    let allow_api_resolution = credential
+        .as_ref()
+        .is_some_and(|credential| !credential.token.trim().is_empty());
     let refs = if let Some(git) = handles.git.as_ref() {
-        download_ref_candidates(
-            git.as_ref(),
-            workspace,
-            version,
-            token.is_some_and(|token| !token.trim().is_empty()),
-        )
-        .await?
+        download_ref_candidates(git.as_ref(), workspace, version, allow_api_resolution).await?
     } else {
         non_git_ref_candidates(version)
     };
@@ -1610,6 +1607,20 @@ fn credential_from_token(
             },
             token: token.to_owned(),
         })
+}
+
+fn credential_for_workspace(
+    paths: &AppPaths,
+    workspace: &WorkspaceRef,
+    token: Option<&str>,
+) -> Result<Option<ProviderCredential>> {
+    if let Some(credential) = credential_from_token(workspace, token) {
+        return Ok(Some(credential));
+    }
+    Ok(skill_library_core::load_provider_credential(
+        &paths.credentials,
+        &workspace.normalized_provider(),
+    )?)
 }
 
 fn github_provider(workspace: &WorkspaceRef, token: Option<&str>) -> Result<GitHubProvider> {
@@ -2315,6 +2326,7 @@ permissions:
             provider: "github".to_owned(),
             owner: owner.to_owned(),
             repo: repo.to_owned(),
+            remote_id: None,
             full_name: full_name.to_owned(),
             default_branch: "main".to_owned(),
             visibility: "private".to_owned(),

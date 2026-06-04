@@ -41,6 +41,7 @@ impl RepoResponse {
             provider: provider.to_owned(),
             owner,
             repo,
+            remote_id: None,
             full_name,
             default_branch: self.default_branch.unwrap_or_else(|| "master".to_owned()),
             visibility: visibility.clone(),

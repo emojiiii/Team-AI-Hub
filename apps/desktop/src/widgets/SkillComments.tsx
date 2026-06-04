@@ -694,8 +694,7 @@ export function SkillComments({
             href={settingsUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="mt-3 inline-block rounded-md bg-[var(--brand)] px-4 py-2 text-[12px] font-medium hover:bg-[var(--brand-hover)]"
-            style={{ color: "white" }}
+            className="mt-3 inline-block rounded-md bg-[var(--brand)] px-4 py-2 text-[12px] font-medium text-[var(--brand-solid-fg)] hover:bg-[var(--brand-hover)]"
           >
             {t("discussion.notEnabled.openSettings")}
           </a>

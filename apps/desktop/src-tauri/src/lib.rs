@@ -452,6 +452,7 @@ fn upsert_provider_instance(
             "Provider web and API URLs are required",
         ));
     }
+    normalize_provider_api_base_url(&mut instance)?;
     validate_provider_url("web_base_url", &instance.web_base_url)?;
     validate_provider_url("api_base_url", &instance.api_base_url)?;
 
@@ -503,6 +504,54 @@ fn validate_provider_url(field: &'static str, value: &str) -> CommandResult<()> 
         ));
     }
     Ok(())
+}
+
+fn normalize_provider_api_base_url(instance: &mut ProviderInstance) -> CommandResult<()> {
+    let Some(api_suffix) = provider_api_suffix(&instance.kind, &instance.id) else {
+        return Ok(());
+    };
+
+    let web_url = Url::parse(&instance.web_base_url).map_err(|error| {
+        CommandError::coded(
+            "invalid_provider_url",
+            format!("web_base_url must be a valid URL: {error}"),
+        )
+    })?;
+    let mut api_url = Url::parse(&instance.api_base_url).map_err(|error| {
+        CommandError::coded(
+            "invalid_provider_url",
+            format!("api_base_url must be a valid URL: {error}"),
+        )
+    })?;
+
+    let api_path = api_url.path().trim_end_matches('/');
+    if api_path.ends_with(api_suffix) {
+        instance.api_base_url = api_url.as_str().trim_end_matches('/').to_owned();
+        return Ok(());
+    }
+
+    let web_path = web_url.path().trim_end_matches('/');
+    let same_origin = api_url.scheme() == web_url.scheme()
+        && api_url.host_str() == web_url.host_str()
+        && api_url.port_or_known_default() == web_url.port_or_known_default();
+    if same_origin && (api_path.is_empty() || api_path == web_path) {
+        let normalized_path = format!("{web_path}{api_suffix}");
+        api_url.set_path(&normalized_path);
+        instance.api_base_url = api_url.as_str().trim_end_matches('/').to_owned();
+    }
+
+    Ok(())
+}
+
+fn provider_api_suffix(kind: &ProviderKind, provider_id: &str) -> Option<&'static str> {
+    match kind {
+        ProviderKind::GitLab => Some("/api/v4"),
+        ProviderKind::Gitee => Some("/api/v5"),
+        ProviderKind::GitHub if normalize_provider_id(provider_id) != "github.com" => {
+            Some("/api/v3")
+        }
+        _ => None,
+    }
 }
 
 fn credential_warning(paths: &AppPaths, credential_store: &str) -> String {
@@ -737,13 +786,20 @@ fn list_workspaces() -> CommandResult<WorkspacesFile> {
 async fn add_workspace(
     workspace: String,
     token: Option<String>,
+    remote_id: Option<String>,
     webhook_url: Option<String>,
     webhook_secret: Option<String>,
     webhook_events: Option<Vec<String>>,
 ) -> CommandResult<StoredWorkspace> {
     let paths = AppPaths::resolve()?;
     skill_library_sync::ensure_local_state(&paths)?;
-    let workspace = parse_workspace(&workspace)?;
+    let mut workspace = parse_workspace(&workspace)?;
+    if let Some(remote_id) = remote_id
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+    {
+        workspace.remote_id = Some(remote_id);
+    }
     let webhook = workspace_webhook_registration(webhook_url, webhook_secret, webhook_events)?;
     if webhook.is_some() {
         ensure_github_capability(&paths, &workspace, "webhooks_unsupported", "webhooks")?;
@@ -4160,11 +4216,28 @@ fn parse_query_pairs(url: &Url) -> HashMap<String, String> {
 }
 
 fn parse_workspace(value: &str) -> CommandResult<WorkspaceRef> {
-    let instances = AppPaths::resolve()
-        .ok()
-        .and_then(|paths| provider_instances(&paths).ok())
-        .unwrap_or_else(skill_library_core::default_provider_instances);
-    parse_workspace_with_instances(value, &instances)
+    let paths = AppPaths::resolve()?;
+    let instances = provider_instances(&paths)
+        .unwrap_or_else(|_| skill_library_core::default_provider_instances());
+    let mut workspace = parse_workspace_with_instances(value, &instances)?;
+    hydrate_workspace_remote_id(&paths, &mut workspace);
+    Ok(workspace)
+}
+
+fn hydrate_workspace_remote_id(paths: &AppPaths, workspace: &mut WorkspaceRef) {
+    if workspace.remote_id.is_some() {
+        return;
+    }
+    let Ok(registry) = skill_library_sync::read_workspaces(&paths.workspace_registry) else {
+        return;
+    };
+    let provider = workspace.normalized_provider();
+    let full_name = workspace.full_name();
+    if let Some(stored) = registry.workspaces.into_iter().find(|stored| {
+        normalize_provider_id(&stored.provider) == provider && stored.full_name == full_name
+    }) {
+        workspace.remote_id = stored.remote_id;
+    }
 }
 
 fn parse_workspace_with_instances(

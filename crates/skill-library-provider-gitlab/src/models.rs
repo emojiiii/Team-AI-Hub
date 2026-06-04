@@ -6,10 +6,12 @@ use crate::permissions::{permission_from_project, split_project_path};
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct ProjectResponse {
+    pub(crate) id: u64,
     pub(crate) path: String,
     pub(crate) path_with_namespace: String,
     #[serde(default)]
     pub(crate) default_branch: Option<String>,
+    #[serde(default = "default_visibility")]
     pub(crate) visibility: String,
     #[serde(default)]
     pub(crate) web_url: Option<String>,
@@ -24,6 +26,7 @@ impl ProjectResponse {
             provider: provider.to_owned(),
             owner,
             repo,
+            remote_id: Some(self.id.to_string()),
             full_name: self.path_with_namespace,
             default_branch: self.default_branch.unwrap_or_else(|| "HEAD".to_owned()),
             visibility: self.visibility.clone(),
@@ -31,6 +34,10 @@ impl ProjectResponse {
             html_url: self.web_url,
         }
     }
+}
+
+fn default_visibility() -> String {
+    "private".to_owned()
 }
 
 #[derive(Debug, Clone, Deserialize)]

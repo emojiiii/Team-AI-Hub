@@ -19,32 +19,36 @@
     sans-serif;
 
   /* Surfaces → HeroUI surface scale */
-  --bg: var(--background);
-  --bg-elevated: var(--surface);
-  --bg-soft: var(--surface-secondary);
-  --bg-sidebar: var(--background-secondary);
-  --bg-active: var(--surface-tertiary);
+  --bg: var(--background, #f7f8fb);
+  --bg-elevated: var(--surface, #ffffff);
+  --bg-soft: var(--surface-secondary, #f2f4f8);
+  --bg-sidebar: var(--background-secondary, #f4f6fa);
+  --bg-active: var(--surface-tertiary, #e9edf5);
 
   /* Text → HeroUI foreground / muted */
-  --fg: var(--foreground);
-  --fg-secondary: var(--muted);
-  --fg-muted: var(--muted);
-  --fg-disabled: color-mix(in oklab, var(--muted) 55%, transparent);
+  --fg: var(--foreground, #171a1f);
+  --fg-secondary: var(--muted, #5f6672);
+  --fg-muted: var(--muted, #737b89);
+  --fg-disabled: color-mix(in oklab, var(--fg-muted) 55%, transparent);
 
   /* Borders → HeroUI border scale */
-  --line: var(--border);
-  --line-strong: var(--border-secondary);
+  --line: var(--border, #dfe3ea);
+  --line-strong: var(--border-secondary, #cbd2dd);
 
-  /* Brand → HeroUI accent */
-  --brand: var(--accent);
-  --brand-hover: var(--accent-hover);
-  --brand-soft: var(--accent-soft);
-  --brand-fg: var(--accent-soft-foreground);
+  /* Brand → HeroUI accent, with app-owned soft/foreground fallbacks. */
+  --accent-foreground: #ffffff;
+  --brand: var(--accent, #0a84ff);
+  --brand-hover: color-mix(in oklab, var(--brand) 86%, black);
+  --brand-soft: color-mix(in oklab, var(--brand) 12%, var(--bg-elevated));
+  --brand-fg: color-mix(in oklab, var(--brand) 76%, var(--fg));
+  --brand-solid-fg: var(--accent-foreground);
+  --accent-soft: var(--brand-soft);
+  --accent-soft-foreground: var(--brand-fg);
 
   /* Status: HeroUI provides --success/--warning/--danger and their -soft
      variants for both light and dark. We only add the soft *foregrounds* the
      app references and an --info color HeroUI doesn't ship. */
-  --info: var(--accent);
+  --info: var(--brand);
 
   /* Code panel stays intentionally dark in both themes */
   --code-bg: #0f172a;
@@ -77,6 +81,12 @@
   --shadow-md: 0 4px 12px -4px rgb(0 0 0 / 0.4), 0 0 0 1px rgb(255 255 255 / 0.04);
   --shadow-popover: 0 10px 32px -8px rgb(0 0 0 / 0.6), 0 0 0 1px rgb(255 255 255 / 0.06);
 
+  --brand-hover: color-mix(in oklab, var(--brand) 82%, white);
+  --brand-soft: color-mix(in oklab, var(--brand) 24%, var(--bg-elevated));
+  --brand-fg: color-mix(in oklab, var(--brand) 46%, white);
+  --accent-soft: var(--brand-soft);
+  --accent-soft-foreground: var(--brand-fg);
+
   --diff-bg: color-mix(in oklab, var(--bg) 88%, black);
   --diff-fg: color-mix(in oklab, var(--fg) 88%, white);
   --diff-muted: color-mix(in oklab, var(--fg-muted) 82%, white);
@@ -95,15 +105,15 @@
    --accent-foreground is the text color shown ON a solid accent fill. */
 :root.accent-purple {
   --accent: oklch(0.55 0.22 295);
-  --accent-foreground: var(--snow);
+  --accent-foreground: #ffffff;
 }
 :root.accent-green {
   --accent: oklch(0.6 0.15 162);
-  --accent-foreground: var(--snow);
+  --accent-foreground: #ffffff;
 }
 :root.accent-orange {
   --accent: oklch(0.67 0.19 47);
-  --accent-foreground: var(--snow);
+  --accent-foreground: #ffffff;
 }
 
 * {

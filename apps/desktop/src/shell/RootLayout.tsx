@@ -225,7 +225,10 @@ export function RootLayout() {
 
   const addRemoteWorkspace = useMutation({
     mutationFn: (workspace: Workspace) =>
-      addWorkspace({ workspace: workspaceInputForProvider(workspace.provider, workspace.full_name) }),
+      addWorkspace({
+        workspace: workspaceInputForProvider(workspace.provider, workspace.full_name),
+        remoteId: workspace.remote_id,
+      }),
     onSuccess: (workspace) => {
       workspaces.refetch();
       setAddWorkspaceOpen(false);

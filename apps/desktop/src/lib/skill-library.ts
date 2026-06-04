@@ -52,6 +52,7 @@ export interface Workspace {
   provider: string;
   owner: string;
   repo: string;
+  remote_id?: string | null;
   full_name: string;
   default_branch: string;
   visibility: string;
@@ -595,6 +596,7 @@ export async function listWorkspaces(): Promise<WorkspacesFile> {
 
 export async function addWorkspace(args: {
   workspace: string;
+  remoteId?: string | null;
   token?: string;
   webhookUrl?: string;
   webhookSecret?: string;

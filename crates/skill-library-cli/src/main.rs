@@ -330,7 +330,7 @@ fn init_logging(paths: &AppPaths, verbose: bool) -> anyhow::Result<PathBuf> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         if verbose {
             EnvFilter::new(
-                "info,skill-library=debug,skill_library_github=debug,skill-library-github=debug,skill-library-gitlab=debug,skill-library-gitee=debug,skill-library-webdav=debug",
+                "info,skill-library=debug,skill-library-governance=debug,skill-library-provider=debug,skill_library_github=debug,skill-library-github=debug,skill-library-gitlab=debug,skill-library-gitee=debug,skill-library-webdav=debug",
             )
         } else {
             EnvFilter::new("info")

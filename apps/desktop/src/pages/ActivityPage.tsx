@@ -25,12 +25,20 @@ const eventIcon: Record<string, ReactNode> = {
   MergeEvent: <GitMerge size={13} className="text-[var(--success)]" />,
 };
 
-export function ActivityPage({ workspaceRef }: { workspaceRef: string }) {
+export function ActivityPage({
+  workspaceRef,
+  providerName = "GitHub",
+  supportsActivity = true,
+}: {
+  workspaceRef: string;
+  providerName?: string;
+  supportsActivity?: boolean;
+}) {
   const { t } = useLocale();
   const query = useQuery({
     queryKey: ["workspace-events", workspaceRef],
     queryFn: () => listWorkspaceEvents(workspaceRef),
-    enabled: Boolean(workspaceRef),
+    enabled: Boolean(workspaceRef && supportsActivity),
     staleTime: 60 * 1000,
   });
 
@@ -41,7 +49,7 @@ export function ActivityPage({ workspaceRef }: { workspaceRef: string }) {
 
   if (!workspaceRef) {
     return (
-      <section className="scroll-area min-h-0 flex-1 px-6 py-6">
+      <section className="grid min-h-0 flex-1 place-items-center overflow-hidden px-6 py-6">
         <div className="empty-state mx-auto max-w-md">
           <div className="empty-state__title">{t("activity.pickWorkspace")}</div>
           <div>{t("activity.selectWorkspace")}</div>
@@ -50,16 +58,28 @@ export function ActivityPage({ workspaceRef }: { workspaceRef: string }) {
     );
   }
 
+  if (!supportsActivity) {
+    return (
+      <section className="grid min-h-0 flex-1 place-items-center overflow-hidden px-6 py-6">
+        <div className="empty-state mx-auto max-w-md">
+          <ActivityIcon size={20} className="text-[var(--fg-muted)]" />
+          <div className="empty-state__title">{t("activity.unsupportedTitle")}</div>
+          <div>{t("activity.unsupportedDesc").replace("{provider}", providerName)}</div>
+        </div>
+      </section>
+    );
+  }
+
   return (
-    <section className="scroll-area min-h-0 flex-1 px-6 py-6">
-      <div className="mx-auto flex max-w-5xl flex-col gap-5">
+    <section className="flex min-h-0 flex-1 overflow-hidden px-6 py-6">
+      <div className="mx-auto flex h-full min-h-0 w-full max-w-5xl flex-col gap-5">
         <div className="grid gap-3 md:grid-cols-3">
           <MetricTile label={t("activity.pushes")} value={pushCount} tone={pushCount ? "warning" : "default"} />
           <MetricTile label={t("activity.prEvents")} value={prCount} tone={prCount ? "default" : "default"} />
           <MetricTile label={t("activity.releases")} value={releaseCount} tone={releaseCount ? "success" : "default"} />
         </div>
 
-        <Card className="overflow-hidden p-0 gap-0">
+        <Card className="flex min-h-0 flex-1 flex-col overflow-hidden p-0 gap-0">
           <Card.Header>
             <div>
               <Card.Title>{t("activity.recentActivity")}</Card.Title>
@@ -82,24 +102,26 @@ export function ActivityPage({ workspaceRef }: { workspaceRef: string }) {
             </div>
           ) : null}
 
-          {events.length ? (
-            <div className="divide-y divide-[var(--line)]">
-              {events.map((event) => (
-                <EventRow key={event.id} event={event} />
-              ))}
-            </div>
-          ) : query.isFetching ? (
-            <div className="empty-state">
-              <div className="empty-state__title">{t("activity.loading")}</div>
-              <div>{t("activity.fetchingEvents")}</div>
-            </div>
-          ) : (
-            <div className="empty-state">
-              <ActivityIcon size={20} className="text-[var(--fg-muted)]" />
-              <div className="empty-state__title">{t("activity.noActivity")}</div>
-              <div>{t("activity.noActivityDesc")}</div>
-            </div>
-          )}
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {events.length ? (
+              <div className="divide-y divide-[var(--line)]">
+                {events.map((event) => (
+                  <EventRow key={event.id} event={event} />
+                ))}
+              </div>
+            ) : query.isFetching ? (
+              <div className="empty-state">
+                <div className="empty-state__title">{t("activity.loading")}</div>
+                <div>{t("activity.fetchingEvents")}</div>
+              </div>
+            ) : (
+              <div className="empty-state">
+                <ActivityIcon size={20} className="text-[var(--fg-muted)]" />
+                <div className="empty-state__title">{t("activity.noActivity")}</div>
+                <div>{t("activity.noActivityDesc")}</div>
+              </div>
+            )}
+          </div>
         </Card>
       </div>
     </section>

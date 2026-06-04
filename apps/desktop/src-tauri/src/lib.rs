@@ -12,13 +12,14 @@ use skill_library_core::{
 use skill_library_installer::{InstallMetadata, InstallOptions, InstallReport, TargetRoot};
 use skill_library_manifest::{effective_risk, SemanticChange, SkillAsset};
 use skill_library_provider::{
-    ChangedFile, GitRef, Invitation, InvitationInput, Member, PageOpts, PermissionLevel, Provider,
+    ChangedFile, GitRef, Invitation, InvitationInput, IssueComment, Member, PageOpts,
+    PermissionLevel, Provider, PullRequestQueryState, PullRequestSummary, RepositoryEvent,
     Workspace,
 };
+use skill_library_provider_gitee::GiteeProvider;
 use skill_library_provider_github::{
     scan::{SkillDetailScan, WorkspaceDetailScan},
-    CommitSummary, GitHubProvider, GitHubPublishFile, GitHubPublishInput, IssueComment,
-    PullRequestQueryState, PullRequestSummary, RepositoryEvent, RepositoryInvitation,
+    CommitSummary, GitHubProvider, GitHubPublishFile, GitHubPublishInput, RepositoryInvitation,
 };
 use skill_library_provider_gitlab::GitLabProvider;
 use skill_library_publish::{PublishPackage, PublishPolicyResult, PublishRequestSummary};
@@ -1157,26 +1158,69 @@ async fn list_workspace_members(
     let paths = AppPaths::resolve()?;
     skill_library_sync::ensure_local_state(&paths)?;
     let workspace = parse_workspace(&workspace)?;
-    ensure_github_capability(&paths, &workspace, "members_unsupported", "members")?;
-    let token = token
-        .or_else(|| saved_github_token(&paths))
-        .ok_or_else(|| {
-            CommandError::coded(
-                "missing_github_token",
-                "GitHub token is required for listing workspace members",
-            )
-        })?;
-    let provider = GitHubProvider::new(token).map_err(provider_command_error)?;
-    let members = provider
-        .list_members(
-            &workspace,
-            PageOpts {
-                cursor: None,
-                per_page: Some(100),
-            },
-        )
-        .await
-        .map_err(provider_command_error)?;
+    let instance = provider_instance_for_workspace(&paths, &workspace)?;
+    let members = match &instance.kind {
+        ProviderKind::GitHub => {
+            let token = token
+                .or_else(|| saved_github_token(&paths))
+                .ok_or_else(|| {
+                    CommandError::coded(
+                        "missing_github_token",
+                        "GitHub token is required for listing workspace members",
+                    )
+                })?;
+            let provider = GitHubProvider::new(token).map_err(provider_command_error)?;
+            provider
+                .list_members(
+                    &workspace,
+                    PageOpts {
+                        cursor: None,
+                        per_page: Some(100),
+                    },
+                )
+                .await
+                .map_err(provider_command_error)?
+        }
+        ProviderKind::GitLab => {
+            let token =
+                token.or_else(|| saved_provider_token(&paths, &workspace.normalized_provider()));
+            let provider =
+                GitLabProvider::for_instance(&instance, token).map_err(provider_command_error)?;
+            provider
+                .list_project_members(
+                    &workspace,
+                    PageOpts {
+                        cursor: None,
+                        per_page: Some(100),
+                    },
+                )
+                .await
+                .map_err(provider_command_error)?
+        }
+        ProviderKind::Gitee => {
+            let token =
+                token.or_else(|| saved_provider_token(&paths, &workspace.normalized_provider()));
+            let provider =
+                GiteeProvider::for_instance(&instance, token).map_err(provider_command_error)?;
+            provider
+                .list_collaborators(
+                    &workspace,
+                    PageOpts {
+                        cursor: None,
+                        per_page: Some(100),
+                    },
+                )
+                .await
+                .map_err(provider_command_error)?
+        }
+        _ => {
+            return Err(unsupported_capability_error(
+                "members_unsupported",
+                "members",
+                &instance,
+            ));
+        }
+    };
     Ok(members.items)
 }
 
@@ -4359,7 +4403,18 @@ fn ensure_github_capability(
     if matches!(&instance.kind, ProviderKind::GitHub) {
         Ok(())
     } else {
-        Err(unsupported_capability_error(code, capability, &instance))
+        let err = unsupported_capability_error(code, capability, &instance);
+        tracing::warn!(
+            target: "skill-library-governance",
+            provider = %instance.id,
+            provider_kind = ?instance.kind,
+            workspace = %workspace.full_name(),
+            capability,
+            code = err.code(),
+            message = err.message(),
+            "provider does not support this governance command"
+        );
+        Err(err)
     }
 }
 
@@ -5795,28 +5850,50 @@ async fn list_workspace_pull_requests(
     let paths = AppPaths::resolve()?;
     skill_library_sync::ensure_local_state(&paths)?;
     let workspace = parse_workspace(&workspace)?;
-    ensure_github_capability(
-        &paths,
-        &workspace,
-        "change_requests_unsupported",
-        "change requests",
-    )?;
-    let token = saved_github_token(&paths).ok_or_else(|| {
-        CommandError::coded(
-            "missing_github_token",
-            "log in with GitHub before listing PRs",
-        )
-    })?;
-    let provider = GitHubProvider::new(token).map_err(provider_command_error)?;
     let state = match state.as_deref() {
         Some("closed") => PullRequestQueryState::Closed,
         Some("all") => PullRequestQueryState::All,
         _ => PullRequestQueryState::Open,
     };
-    provider
-        .list_pull_requests(&workspace, state)
-        .await
-        .map_err(provider_command_error)
+    let instance = provider_instance_for_workspace(&paths, &workspace)?;
+    match &instance.kind {
+        ProviderKind::GitHub => {
+            let token = saved_github_token(&paths).ok_or_else(|| {
+                CommandError::coded(
+                    "missing_github_token",
+                    "log in with GitHub before listing PRs",
+                )
+            })?;
+            let provider = GitHubProvider::new(token).map_err(provider_command_error)?;
+            provider
+                .list_pull_requests(&workspace, state)
+                .await
+                .map_err(provider_command_error)
+        }
+        ProviderKind::GitLab => {
+            let token = saved_provider_token(&paths, &workspace.normalized_provider());
+            let provider =
+                GitLabProvider::for_instance(&instance, token).map_err(provider_command_error)?;
+            provider
+                .list_merge_requests(&workspace, state)
+                .await
+                .map_err(provider_command_error)
+        }
+        ProviderKind::Gitee => {
+            let token = saved_provider_token(&paths, &workspace.normalized_provider());
+            let provider =
+                GiteeProvider::for_instance(&instance, token).map_err(provider_command_error)?;
+            provider
+                .list_pull_requests(&workspace, state)
+                .await
+                .map_err(provider_command_error)
+        }
+        _ => Err(unsupported_capability_error(
+            "change_requests_unsupported",
+            "change requests",
+            &instance,
+        )),
+    }
 }
 
 #[tauri::command]
@@ -5827,23 +5904,45 @@ async fn list_workspace_pull_request_files(
     let paths = AppPaths::resolve()?;
     skill_library_sync::ensure_local_state(&paths)?;
     let workspace = parse_workspace(&workspace)?;
-    ensure_github_capability(
-        &paths,
-        &workspace,
-        "change_requests_unsupported",
-        "change requests",
-    )?;
-    let token = saved_github_token(&paths).ok_or_else(|| {
-        CommandError::coded(
-            "missing_github_token",
-            "log in with GitHub before reading PR files",
-        )
-    })?;
-    let provider = GitHubProvider::new(token).map_err(provider_command_error)?;
-    provider
-        .list_pull_request_files(&workspace, number)
-        .await
-        .map_err(provider_command_error)
+    let instance = provider_instance_for_workspace(&paths, &workspace)?;
+    match &instance.kind {
+        ProviderKind::GitHub => {
+            let token = saved_github_token(&paths).ok_or_else(|| {
+                CommandError::coded(
+                    "missing_github_token",
+                    "log in with GitHub before reading PR files",
+                )
+            })?;
+            let provider = GitHubProvider::new(token).map_err(provider_command_error)?;
+            provider
+                .list_pull_request_files(&workspace, number)
+                .await
+                .map_err(provider_command_error)
+        }
+        ProviderKind::GitLab => {
+            let token = saved_provider_token(&paths, &workspace.normalized_provider());
+            let provider =
+                GitLabProvider::for_instance(&instance, token).map_err(provider_command_error)?;
+            provider
+                .list_merge_request_files(&workspace, number)
+                .await
+                .map_err(provider_command_error)
+        }
+        ProviderKind::Gitee => {
+            let token = saved_provider_token(&paths, &workspace.normalized_provider());
+            let provider =
+                GiteeProvider::for_instance(&instance, token).map_err(provider_command_error)?;
+            provider
+                .list_pull_request_files(&workspace, number)
+                .await
+                .map_err(provider_command_error)
+        }
+        _ => Err(unsupported_capability_error(
+            "change_requests_unsupported",
+            "change requests",
+            &instance,
+        )),
+    }
 }
 
 #[tauri::command]
@@ -5974,23 +6073,45 @@ async fn list_workspace_events(workspace: String) -> CommandResult<Vec<Repositor
     let paths = AppPaths::resolve()?;
     skill_library_sync::ensure_local_state(&paths)?;
     let workspace = parse_workspace(&workspace)?;
-    ensure_github_capability(
-        &paths,
-        &workspace,
-        "activity_unsupported",
-        "repository activity",
-    )?;
-    let token = saved_github_token(&paths).ok_or_else(|| {
-        CommandError::coded(
-            "missing_github_token",
-            "log in with GitHub before listing activity",
-        )
-    })?;
-    let provider = GitHubProvider::new(token).map_err(provider_command_error)?;
-    provider
-        .list_repository_events(&workspace)
-        .await
-        .map_err(provider_command_error)
+    let instance = provider_instance_for_workspace(&paths, &workspace)?;
+    match &instance.kind {
+        ProviderKind::GitHub => {
+            let token = saved_github_token(&paths).ok_or_else(|| {
+                CommandError::coded(
+                    "missing_github_token",
+                    "log in with GitHub before listing activity",
+                )
+            })?;
+            let provider = GitHubProvider::new(token).map_err(provider_command_error)?;
+            provider
+                .list_repository_events(&workspace)
+                .await
+                .map_err(provider_command_error)
+        }
+        ProviderKind::GitLab => {
+            let token = saved_provider_token(&paths, &workspace.normalized_provider());
+            let provider =
+                GitLabProvider::for_instance(&instance, token).map_err(provider_command_error)?;
+            provider
+                .list_repository_events(&workspace)
+                .await
+                .map_err(provider_command_error)
+        }
+        ProviderKind::Gitee => {
+            let token = saved_provider_token(&paths, &workspace.normalized_provider());
+            let provider =
+                GiteeProvider::for_instance(&instance, token).map_err(provider_command_error)?;
+            provider
+                .list_repository_events(&workspace)
+                .await
+                .map_err(provider_command_error)
+        }
+        _ => Err(unsupported_capability_error(
+            "activity_unsupported",
+            "repository activity",
+            &instance,
+        )),
+    }
 }
 
 #[tauri::command]
@@ -6477,6 +6598,11 @@ fn github_provider(token: Option<&str>) -> CommandResult<GitHubProvider> {
 }
 
 fn provider_command_error(err: skill_library_provider::ProviderError) -> CommandError {
+    tracing::warn!(
+        target: "skill-library-provider",
+        error = %err,
+        "provider command failed"
+    );
     CommandError::coded("provider_error", err.to_string())
 }
 
@@ -6492,7 +6618,7 @@ fn init_tracing() {
 
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new(
-            "info,skill-library=debug,skill_library_github=debug,skill-library-github=debug,skill-library-gitlab=debug,skill-library-gitee=debug,skill-library-webdav=debug",
+            "info,skill-library=debug,skill-library-governance=debug,skill-library-provider=debug,skill_library_github=debug,skill-library-github=debug,skill-library-gitlab=debug,skill-library-gitee=debug,skill-library-webdav=debug",
         )
     });
 

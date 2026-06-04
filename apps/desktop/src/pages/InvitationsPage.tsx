@@ -20,7 +20,10 @@ import { MemberRow } from "../widgets/rows";
 
 export function InvitationsPage({
   workspaceRef,
+  providerName = "GitHub",
   workspacePermission,
+  supportsMembers = true,
+  supportsInvitations = true,
   inviteLogin,
   setInviteLogin,
   inviteRole,
@@ -30,7 +33,10 @@ export function InvitationsPage({
   inviteCollaborator,
 }: {
   workspaceRef: string;
+  providerName?: string;
   workspacePermission: string;
+  supportsMembers?: boolean;
+  supportsInvitations?: boolean;
   inviteLogin: string;
   setInviteLogin: (value: string) => void;
   inviteRole: InviteRole;
@@ -48,6 +54,7 @@ export function InvitationsPage({
     queryKey: ["repo-invitations"],
     queryFn: listRepositoryInvitations,
     staleTime: 60 * 1000,
+    enabled: supportsInvitations,
   });
 
   const accept = useMutation({
@@ -58,16 +65,27 @@ export function InvitationsPage({
     },
   });
 
-  const incomingList = incoming.data ?? [];
-  const incomingError = incoming.error
+  const incomingList = supportsInvitations ? incoming.data ?? [] : [];
+  const incomingError = supportsInvitations && incoming.error
     ? incoming.error instanceof Error
       ? incoming.error.message
       : String(incoming.error)
     : null;
 
+  if (!supportsMembers && !supportsInvitations) {
+    return (
+      <section className="grid min-h-0 flex-1 place-items-center overflow-hidden px-6 py-6">
+        <div className="empty-state mx-auto max-w-md">
+          <div className="empty-state__title">{t("invitations.unsupportedTitle")}</div>
+          <div>{t("invitations.unsupportedDesc").replace("{provider}", providerName)}</div>
+        </div>
+      </section>
+    );
+  }
+
   return (
-    <section className="scroll-area min-h-0 flex-1 px-6 py-6">
-      <div className="mx-auto flex max-w-6xl flex-col gap-5">
+    <section className="flex min-h-0 flex-1 overflow-hidden px-6 py-6">
+      <div className="mx-auto flex h-full min-h-0 w-full max-w-6xl flex-col gap-5">
         <div className="grid gap-3 md:grid-cols-3">
           <MetricTile
             label={t("invitations.incoming")}
@@ -82,115 +100,129 @@ export function InvitationsPage({
           <MetricTile label={t("invitations.yourRole")} value={workspacePermission} tone="default" />
         </div>
 
-        <ManagementTable
-          title={t("invitations.reposInvitedYou")}
-          subtitle={t("invitations.reposInvitedYouSub")}
-          count={incomingList.length}
-          error={incomingError}
-          empty={t("invitations.noInvitations")}
-          maxHeightClassName="max-h-[360px]"
-          actions={
-            <Button
-              isIconOnly
-              size="sm"
-              variant="tertiary"
-              onPress={() => incoming.refetch()}
-              isPending={incoming.isFetching}
+        <div className="flex min-h-0 flex-1 flex-col gap-5">
+          {supportsInvitations ? (
+            <ManagementTable
+              title={t("invitations.reposInvitedYou")}
+              subtitle={t("invitations.reposInvitedYouSub")}
+              count={incomingList.length}
+              error={incomingError}
+              empty={t("invitations.noInvitations")}
+              maxHeightClassName="max-h-[220px]"
+              className="shrink-0"
+              actions={
+                <Button
+                  isIconOnly
+                  size="sm"
+                  variant="tertiary"
+                  onPress={() => incoming.refetch()}
+                  isPending={incoming.isFetching}
+                >
+                  <RefreshCw size={13} />
+                </Button>
+              }
             >
-              <RefreshCw size={13} />
-            </Button>
-          }
-        >
-          {incomingList.map((invitation) => (
-            <InvitationRow
-              key={invitation.id}
-              invitation={invitation}
-              accepting={accept.isPending && accept.variables === invitation.id}
-              onAccept={() => accept.mutate(invitation.id)}
-            />
-          ))}
-        </ManagementTable>
+              {incomingList.map((invitation) => (
+                <InvitationRow
+                  key={invitation.id}
+                  invitation={invitation}
+                  accepting={accept.isPending && accept.variables === invitation.id}
+                  onAccept={() => accept.mutate(invitation.id)}
+                />
+              ))}
+            </ManagementTable>
+          ) : null}
 
-        <div className="grid gap-5 xl:grid-cols-[400px_minmax(0,1fr)]">
-          <Card className="p-4">
-            <div className="mb-3 flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <Card.Title>{t("invitations.inviteCollaborator")}</Card.Title>
-                <Card.Subtitle className="truncate">{workspaceRef || t("invitations.pickWorkspaceFirst")}</Card.Subtitle>
-              </div>
-            </div>
+          <div className={supportsInvitations ? "grid min-h-0 flex-1 gap-5 xl:grid-cols-[400px_minmax(0,1fr)]" : "grid min-h-0 flex-1 gap-5"}>
+            {supportsInvitations ? (
+              <Card className="self-start p-4">
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <Card.Title>{t("invitations.inviteCollaborator")}</Card.Title>
+                    <Card.Subtitle className="truncate">{workspaceRef || t("invitations.pickWorkspaceFirst")}</Card.Subtitle>
+                  </div>
+                </div>
 
-            <div className="grid grid-cols-[1fr_auto] gap-2">
-              <Input
-                aria-label={t("invitations.usernamePlaceholder")}
-                name="inviteLogin"
-                value={inviteLogin}
-                onChange={(event) => setInviteLogin(event.target.value)}
-                placeholder={t("invitations.usernamePlaceholder")}
-                variant="secondary"
-                disabled={!workspaceRef}
-                autoCapitalize="none"
-                autoCorrect="off"
-                spellCheck={false}
-              />
-              <Button
-                onPress={() => inviteCollaborator.mutate()}
-                isPending={inviteCollaborator.isPending}
-                isDisabled={!inviteLogin.trim() || !workspaceRef}
-              >
-                <UserPlus size={14} />
-                {t("invitations.invite")}
-              </Button>
-            </div>
-
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {inviteRoles.map((role) => {
-                const active = inviteRole === role;
-                return (
+                <div className="grid grid-cols-[1fr_auto] gap-2">
+                  <Input
+                    aria-label={t("invitations.usernamePlaceholder")}
+                    name="inviteLogin"
+                    value={inviteLogin}
+                    onChange={(event) => setInviteLogin(event.target.value)}
+                    placeholder={t("invitations.usernamePlaceholder")}
+                    variant="secondary"
+                    disabled={!workspaceRef}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                  />
                   <Button
-                    key={role}
-                    size="sm"
-                    variant={active ? "secondary" : "outline"}
-                    onPress={() => setInviteRole(role)}
+                    onPress={() => inviteCollaborator.mutate()}
+                    isPending={inviteCollaborator.isPending}
+                    isDisabled={!inviteLogin.trim() || !workspaceRef}
                   >
-                    {inviteRoleLabel[role]}
+                    <UserPlus size={14} />
+                    {t("invitations.invite")}
                   </Button>
-                );
-              })}
-            </div>
+                </div>
 
-            {inviteCollaborator.data ? (
-              <div className="mt-3 rounded-md border border-[var(--accent)] bg-[var(--accent-soft)] px-3 py-2 text-xs text-[var(--accent-soft-foreground)]">
-                {t("invitations.invited")} {inviteCollaborator.data.login_or_email} · {inviteCollaborator.data.state}
-              </div>
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {inviteRoles.map((role) => {
+                    const active = inviteRole === role;
+                    return (
+                      <Button
+                        key={role}
+                        size="sm"
+                        variant={active ? "secondary" : "outline"}
+                        onPress={() => setInviteRole(role)}
+                      >
+                        {inviteRoleLabel[role]}
+                      </Button>
+                    );
+                  })}
+                </div>
+
+                {inviteCollaborator.data ? (
+                  <div className="mt-3 rounded-md border border-[var(--accent)] bg-[var(--accent-soft)] px-3 py-2 text-xs text-[var(--accent-soft-foreground)]">
+                    {t("invitations.invited")} {inviteCollaborator.data.login_or_email} · {inviteCollaborator.data.state}
+                  </div>
+                ) : null}
+              </Card>
             ) : null}
-          </Card>
 
-          <ManagementTable
-            title={t("invitations.workspaceMembers")}
-            subtitle={t("invitations.workspaceMembersSub")}
-            count={members.length}
-            error={membersError}
-            empty={t("invitations.noCollaborators")}
-            maxHeightClassName="max-h-[420px]"
-          >
-            {members.map((member) => (
-              <MemberRow
-                key={member.login}
-                member={member}
-                onChangeRole={(login, role) => {
-                  // Use the invite API to update permission (GitHub treats re-invite as permission update)
-                  inviteGithubCollaborator({
-                    workspace: workspaceRef,
-                    login,
-                    role,
-                  }).then(() => {
-                    queryClient.invalidateQueries({ queryKey: ["workspace-members"] });
-                  });
-                }}
-              />
-            ))}
-          </ManagementTable>
+            {supportsMembers ? (
+              <ManagementTable
+                title={t("invitations.workspaceMembers")}
+                subtitle={t("invitations.workspaceMembersSub")}
+                count={members.length}
+                error={membersError}
+                empty={t("invitations.noCollaborators")}
+                className="flex min-h-0 flex-1 flex-col"
+                bodyClassName="min-h-0 flex-1"
+              >
+                {members.map((member) => (
+                  <MemberRow
+                    key={member.login}
+                    member={member}
+                    onChangeRole={
+                      supportsInvitations
+                        ? (login, role) => {
+                            // Use the invite API to update permission (GitHub treats re-invite as permission update)
+                            inviteGithubCollaborator({
+                              workspace: workspaceRef,
+                              login,
+                              role,
+                            }).then(() => {
+                              queryClient.invalidateQueries({ queryKey: ["workspace-members"] });
+                            });
+                          }
+                        : undefined
+                    }
+                  />
+                ))}
+              </ManagementTable>
+            ) : null}
+          </div>
         </div>
       </div>
     </section>

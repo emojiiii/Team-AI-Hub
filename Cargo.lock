@@ -4430,6 +4430,7 @@ dependencies = [
  "skill-library-installer",
  "skill-library-manifest",
  "skill-library-provider",
+ "skill-library-provider-gitee",
  "skill-library-provider-github",
  "skill-library-provider-gitlab",
  "skill-library-publish",

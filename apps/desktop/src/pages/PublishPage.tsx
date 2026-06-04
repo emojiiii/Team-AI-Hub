@@ -32,7 +32,17 @@ function formatError(err: unknown) {
   return err instanceof Error ? err.message : String(err);
 }
 
-export function PublishPage({ workspaceRef }: { workspaceRef: string }) {
+export function PublishPage({
+  workspaceRef,
+  providerName = "GitHub",
+  supportsPullRequests = true,
+  supportsPullRequestActions = true,
+}: {
+  workspaceRef: string;
+  providerName?: string;
+  supportsPullRequests?: boolean;
+  supportsPullRequestActions?: boolean;
+}) {
   const { t } = useLocale();
   const queryClient = useQueryClient();
   const [state, setState] = useState<PullRequestQueryState>("open");
@@ -48,7 +58,7 @@ export function PublishPage({ workspaceRef }: { workspaceRef: string }) {
   const query = useQuery({
     queryKey: ["pull-requests", workspaceRef, state],
     queryFn: () => listWorkspacePullRequests(workspaceRef, state),
-    enabled: Boolean(workspaceRef),
+    enabled: Boolean(workspaceRef && supportsPullRequests),
     staleTime: 60 * 1000,
   });
 
@@ -124,7 +134,7 @@ export function PublishPage({ workspaceRef }: { workspaceRef: string }) {
 
   if (!workspaceRef) {
     return (
-      <section className="scroll-area min-h-0 flex-1 px-6 py-6">
+      <section className="grid min-h-0 flex-1 place-items-center overflow-hidden px-6 py-6">
         <div className="empty-state mx-auto max-w-md">
           <div className="empty-state__title">{t("publishPage.pickWorkspace")}</div>
           <div>{t("publishPage.selectWorkspace")}</div>
@@ -133,16 +143,27 @@ export function PublishPage({ workspaceRef }: { workspaceRef: string }) {
     );
   }
 
+  if (!supportsPullRequests) {
+    return (
+      <section className="grid min-h-0 flex-1 place-items-center overflow-hidden px-6 py-6">
+        <div className="empty-state mx-auto max-w-md">
+          <div className="empty-state__title">{t("publishPage.unsupportedTitle")}</div>
+          <div>{t("publishPage.unsupportedDesc").replace("{provider}", providerName)}</div>
+        </div>
+      </section>
+    );
+  }
+
   return (
-    <section className="scroll-area min-h-0 flex-1 px-6 py-6">
-      <div className="mx-auto flex max-w-[1480px] flex-col gap-5">
+    <section className="flex min-h-0 flex-1 overflow-hidden px-6 py-6">
+      <div className="mx-auto flex h-full min-h-0 w-full max-w-[1480px] flex-col gap-5">
         <div className="grid gap-3 md:grid-cols-3">
           <MetricTile label={t("publishPage.open")} value={open} tone={open ? "warning" : "default"} />
           <MetricTile label={t("publishPage.merged")} value={merged} tone={merged ? "success" : "default"} />
           <MetricTile label={t("publishPage.drafts")} value={drafts} tone={drafts ? "default" : "default"} />
         </div>
 
-        <Card className="min-h-[680px] overflow-hidden p-0 gap-0">
+        <Card className="flex min-h-0 flex-1 flex-col overflow-hidden p-0 gap-0">
           <Card.Header>
             <div>
               <Card.Title>{t("publishPage.pullRequests")}</Card.Title>
@@ -177,8 +198,8 @@ export function PublishPage({ workspaceRef }: { workspaceRef: string }) {
             </div>
           ) : null}
 
-          {prs.length ? (
-            <div className="min-h-0 flex-1">
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {prs.length ? (
               <div className="divide-y divide-[var(--line)]">
                 {prs.map((pr) => (
                   <PullRequestRow
@@ -192,18 +213,18 @@ export function PublishPage({ workspaceRef }: { workspaceRef: string }) {
                   />
                 ))}
               </div>
-            </div>
-          ) : query.isFetching ? (
-            <div className="empty-state">
-              <div className="empty-state__title">{t("publishPage.loading")}</div>
-              <div>{t("publishPage.fetchingPrs")}</div>
-            </div>
-          ) : (
-            <div className="empty-state">
-              <div className="empty-state__title">{t("publishPage.noPrs").replace("{state}", state)}</div>
-              <div>{t("publishPage.useSyncHint")}</div>
-            </div>
-          )}
+            ) : query.isFetching ? (
+              <div className="empty-state">
+                <div className="empty-state__title">{t("publishPage.loading")}</div>
+                <div>{t("publishPage.fetchingPrs")}</div>
+              </div>
+            ) : (
+              <div className="empty-state">
+                <div className="empty-state__title">{t("publishPage.noPrs").replace("{state}", state)}</div>
+                <div>{t("publishPage.useSyncHint")}</div>
+              </div>
+            )}
+          </div>
         </Card>
 
         <Drawer.Backdrop isOpen={detailOpen && Boolean(selected)} onOpenChange={closeDetail} variant="blur">
@@ -217,6 +238,7 @@ export function PublishPage({ workspaceRef }: { workspaceRef: string }) {
                   mergePending={mergeMutation.isPending}
                   closePending={closeMutation.isPending}
                   commentPending={commentMutation.isPending}
+                  supportsActions={supportsPullRequestActions}
                   onMerge={(pr) => mergeMutation.mutate(pr)}
                   onClose={(input) => closeMutation.mutate(input)}
                   onComment={(input) => commentMutation.mutate(input)}
@@ -292,6 +314,7 @@ function PullRequestDetail({
   mergePending,
   closePending,
   commentPending,
+  supportsActions,
   onMerge,
   onClose,
   onComment,
@@ -301,6 +324,7 @@ function PullRequestDetail({
   mergePending: boolean;
   closePending: boolean;
   commentPending: boolean;
+  supportsActions: boolean;
   onMerge: (pr: WorkspacePullRequest) => void;
   onClose: (input: { pr: WorkspacePullRequest; comment: string }) => void;
   onComment: (input: { pr: WorkspacePullRequest; body: string }) => void;
@@ -389,7 +413,7 @@ function PullRequestDetail({
           </div>
         ) : null}
 
-        {openPr ? (
+        {openPr && supportsActions ? (
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <AlertDialog>
               <Button size="sm" variant="outline" isDisabled={mergePending || closePending}>
@@ -478,7 +502,7 @@ function PullRequestDetail({
         ) : null}
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px]">
+      <div className={supportsActions ? "grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px]" : "min-h-0 flex-1"}>
         <div className="min-h-0 overflow-y-auto bg-[var(--bg-soft)] px-4 py-3">
           {filesQuery.isFetching && !files.length ? (
             <div className="flex items-center justify-center gap-2 rounded-md border border-[var(--line)] bg-[var(--bg-elevated)] px-4 py-10 text-[12px] text-[var(--fg-muted)]">
@@ -502,36 +526,38 @@ function PullRequestDetail({
           )}
         </div>
 
-        <aside className="flex min-h-0 flex-col border-t border-[var(--line)] bg-[var(--bg-elevated)] xl:border-l xl:border-t-0">
-          <div className="border-b border-[var(--line)] px-4 py-3">
-            <div className="text-[12px] font-semibold text-[var(--fg)]">{t("publishPage.comments")}</div>
-            <div className="mt-0.5 text-[11.5px] text-[var(--fg-muted)]">{t("publishPage.commentsDesc")}</div>
-          </div>
-          <div className="flex min-h-0 flex-1 flex-col gap-3 px-4 py-3">
-            <textarea
-              value={comment}
-              onChange={(event) => setComment(event.target.value)}
-              rows={8}
-              className="w-full resize-y rounded-md border border-[var(--line)] bg-[var(--bg)] px-3 py-2 text-[13px] text-[var(--fg)] outline-none focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand-soft)]"
-              placeholder={t("publishPage.commentPlaceholder")}
-            />
-            <Button
-              size="sm"
-              onPress={() => {
-                onComment({ pr, body: comment });
-                setComment("");
-              }}
-              isDisabled={!comment.trim() || commentPending}
-              isPending={commentPending}
-            >
-              <MessageSquare size={14} />
-              {t("publishPage.submitComment")}
-            </Button>
-            <div className="mt-auto rounded-md border border-[var(--line)] bg-[var(--bg-soft)] px-3 py-2 text-[11.5px] leading-5 text-[var(--fg-muted)]">
-              {t("publishPage.commentNote")}
+        {supportsActions ? (
+          <aside className="flex min-h-0 flex-col border-t border-[var(--line)] bg-[var(--bg-elevated)] xl:border-l xl:border-t-0">
+            <div className="border-b border-[var(--line)] px-4 py-3">
+              <div className="text-[12px] font-semibold text-[var(--fg)]">{t("publishPage.comments")}</div>
+              <div className="mt-0.5 text-[11.5px] text-[var(--fg-muted)]">{t("publishPage.commentsDesc")}</div>
             </div>
-          </div>
-        </aside>
+            <div className="flex min-h-0 flex-1 flex-col gap-3 px-4 py-3">
+              <textarea
+                value={comment}
+                onChange={(event) => setComment(event.target.value)}
+                rows={8}
+                className="w-full resize-y rounded-md border border-[var(--line)] bg-[var(--bg)] px-3 py-2 text-[13px] text-[var(--fg)] outline-none focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand-soft)]"
+                placeholder={t("publishPage.commentPlaceholder")}
+              />
+              <Button
+                size="sm"
+                onPress={() => {
+                  onComment({ pr, body: comment });
+                  setComment("");
+                }}
+                isDisabled={!comment.trim() || commentPending}
+                isPending={commentPending}
+              >
+                <MessageSquare size={14} />
+                {t("publishPage.submitComment")}
+              </Button>
+              <div className="mt-auto rounded-md border border-[var(--line)] bg-[var(--bg-soft)] px-3 py-2 text-[11.5px] leading-5 text-[var(--fg-muted)]">
+                {t("publishPage.commentNote")}
+              </div>
+            </div>
+          </aside>
+        ) : null}
       </div>
     </div>
   );

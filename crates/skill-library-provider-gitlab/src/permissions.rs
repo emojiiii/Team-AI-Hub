@@ -13,7 +13,7 @@ pub(crate) fn gitlab_capabilities() -> ProviderCapabilities {
         change_requests: Capability::Experimental,
         direct_file_write: Capability::Unsupported,
         invitations: Capability::Unsupported,
-        members: Capability::Unsupported,
+        members: Capability::Supported,
         webhooks: Capability::Unsupported,
         discussions: Capability::Unsupported,
         file_storage: Capability::Unsupported,

@@ -3,11 +3,11 @@ import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { Button } from "@heroui/react";
 import { PackageOpen } from "lucide-react";
-import { getAuthStatus, listWorkspaces } from "../lib/skill-library";
+import { getAuthStatus, listProviderInstances, listWorkspaces } from "../lib/skill-library";
 import { WorkspaceProvider, type WorkspaceContextValue } from "../context/WorkspaceContext";
 import { useAppStore } from "../state/appStore";
 import { useLocale } from "../hooks/useLocale";
-import { workspaceKey, workspaceMatchesSelection } from "../lib/providers";
+import { normalizeProviderId, workspaceKey, workspaceMatchesSelection, workspaceProviderId } from "../lib/providers";
 
 /**
  * Workspace layout route component (pathless layout route).
@@ -27,6 +27,11 @@ export function WorkspaceShell() {
   const setAddWorkspaceOpen = useAppStore((s) => s.setAddWorkspaceOpen);
 
   const workspaces = useQuery({ queryKey: ["workspaces"], queryFn: listWorkspaces, staleTime: 2 * 60 * 1000 });
+  const providerInstances = useQuery({
+    queryKey: ["provider-instances"],
+    queryFn: listProviderInstances,
+    staleTime: 2 * 60 * 1000,
+  });
   const auth = useQuery({ queryKey: ["auth-status"], queryFn: getAuthStatus });
 
   const workspaceMeta = useMemo(
@@ -34,10 +39,35 @@ export function WorkspaceShell() {
     [workspaces.data?.workspaces, workspace],
   );
   const workspaceRef = workspaceMeta ? workspaceKey(workspaceMeta) : workspace ?? "";
+  const providerId = workspaceMeta?.provider
+    ? normalizeProviderId(workspaceMeta.provider)
+    : workspaceProviderId(workspace ?? "");
+  const providerInstance = useMemo(
+    () =>
+      providerInstances.data?.find(
+        (instance) => normalizeProviderId(instance.id) === providerId,
+      ) ?? null,
+    [providerId, providerInstances.data],
+  );
+  const providerAuthStatus = useMemo(
+    () =>
+      auth.data?.providers?.find(
+        (status) => normalizeProviderId(status.provider) === providerId,
+      ) ?? null,
+    [auth.data?.providers, providerId],
+  );
+  const authLogin = providerAuthStatus?.login ?? (providerId === "github.com" ? auth.data?.githubLogin : null);
 
   const ctx: WorkspaceContextValue = useMemo(
-    () => ({ workspace: workspaceRef, workspaceMeta, authLogin: auth.data?.githubLogin }),
-    [workspaceRef, workspaceMeta, auth.data?.githubLogin],
+    () => ({
+      workspace: workspaceRef,
+      workspaceMeta,
+      providerId,
+      providerInstance,
+      providerAuthStatus,
+      authLogin,
+    }),
+    [authLogin, providerAuthStatus, providerId, providerInstance, workspaceMeta, workspaceRef],
   );
 
   if (!workspace) {

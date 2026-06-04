@@ -1,8 +1,13 @@
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use skill_library_provider::{ChangedFile, FileEntry, FileKind, Release, Tag, Workspace};
+use skill_library_provider::{
+    ChangedFile, FileEntry, FileKind, Member, PullRequestSummary, Release, RepositoryEvent, Tag,
+    Workspace,
+};
 
-use crate::permissions::{permission_from_project, split_project_path};
+use crate::permissions::{
+    permission_from_access_level, permission_from_project, split_project_path,
+};
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct ProjectResponse {
@@ -182,4 +187,155 @@ impl From<CompareDiffResponse> for ChangedFile {
 pub(crate) struct MemberResponse {
     pub(crate) username: String,
     pub(crate) access_level: u32,
+    #[serde(default)]
+    pub(crate) avatar_url: Option<String>,
+}
+
+impl From<MemberResponse> for Member {
+    fn from(value: MemberResponse) -> Self {
+        Self {
+            login: value.username,
+            role: permission_from_access_level(value.access_level),
+            avatar_url: value.avatar_url,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct MergeRequestResponse {
+    pub(crate) iid: u64,
+    pub(crate) title: String,
+    pub(crate) web_url: String,
+    pub(crate) state: String,
+    #[serde(default)]
+    pub(crate) draft: bool,
+    #[serde(default)]
+    pub(crate) work_in_progress: bool,
+    #[serde(default)]
+    pub(crate) merged_at: Option<String>,
+    #[serde(default)]
+    pub(crate) author: Option<GitLabUserResponse>,
+    #[serde(default)]
+    pub(crate) source_branch: String,
+    #[serde(default)]
+    pub(crate) target_branch: String,
+    #[serde(default)]
+    pub(crate) source_project_id: Option<u64>,
+    #[serde(default)]
+    pub(crate) target_project_id: Option<u64>,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+    #[serde(default)]
+    pub(crate) description: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct GitLabUserResponse {
+    pub(crate) username: String,
+}
+
+impl From<MergeRequestResponse> for PullRequestSummary {
+    fn from(value: MergeRequestResponse) -> Self {
+        let merged = value.state == "merged" || value.merged_at.is_some();
+        Self {
+            number: value.iid,
+            title: value.title,
+            html_url: value.web_url,
+            state: if value.state == "opened" {
+                "open".to_owned()
+            } else {
+                "closed".to_owned()
+            },
+            draft: value.draft || value.work_in_progress,
+            merged,
+            author: value.author.map(|author| author.username),
+            head_ref: value.source_branch,
+            base_ref: value.target_branch,
+            head_repo: value.source_project_id.map(|id| id.to_string()),
+            base_repo: value.target_project_id.map(|id| id.to_string()),
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+            body: value.description,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct MergeRequestChangesResponse {
+    #[serde(default)]
+    pub(crate) changes: Vec<CompareDiffResponse>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct ProjectEventResponse {
+    #[serde(default)]
+    pub(crate) id: Option<serde_json::Value>,
+    #[serde(default)]
+    pub(crate) action_name: Option<String>,
+    #[serde(default)]
+    pub(crate) target_type: Option<String>,
+    #[serde(default)]
+    pub(crate) target_title: Option<String>,
+    #[serde(default)]
+    pub(crate) target_url: Option<String>,
+    #[serde(default)]
+    pub(crate) author: Option<GitLabUserResponse>,
+    pub(crate) created_at: String,
+    #[serde(default)]
+    pub(crate) push_data: Option<ProjectPushDataResponse>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct ProjectPushDataResponse {
+    #[serde(default)]
+    pub(crate) commit_count: Option<u64>,
+    #[serde(default)]
+    pub(crate) ref_name: Option<String>,
+    #[serde(default)]
+    pub(crate) action: Option<String>,
+}
+
+impl From<ProjectEventResponse> for RepositoryEvent {
+    fn from(value: ProjectEventResponse) -> Self {
+        let id = value
+            .id
+            .as_ref()
+            .and_then(|id| {
+                id.as_str()
+                    .map(str::to_owned)
+                    .or_else(|| id.as_u64().map(|value| value.to_string()))
+            })
+            .unwrap_or_else(|| value.created_at.clone());
+        let actor = value.author.map(|author| author.username);
+        let (event_type, summary) = if let Some(push) = value.push_data {
+            let count = push.commit_count.unwrap_or(0);
+            let ref_name = push.ref_name.unwrap_or_default();
+            let action = push.action.unwrap_or_else(|| "pushed".to_owned());
+            (
+                "PushEvent".to_owned(),
+                format!("{action} {count} commit(s) to {ref_name}"),
+            )
+        } else {
+            let target_type = value.target_type.unwrap_or_default();
+            let action = value.action_name.unwrap_or_else(|| "updated".to_owned());
+            let title = value.target_title.unwrap_or_default();
+            let event_type = match target_type.as_str() {
+                "MergeRequest" => "PullRequestEvent",
+                "Release" => "ReleaseEvent",
+                _ => "CreateEvent",
+            };
+            (
+                event_type.to_owned(),
+                format!("{action} {title}").trim().to_owned(),
+            )
+        };
+        Self {
+            id,
+            event_type,
+            actor,
+            created_at: value.created_at,
+            summary,
+            html_url: value.target_url,
+        }
+    }
 }

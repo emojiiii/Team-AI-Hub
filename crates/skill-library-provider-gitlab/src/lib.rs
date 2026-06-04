@@ -1,5 +1,6 @@
 mod archive;
 mod git;
+mod governance;
 mod http;
 mod models;
 mod permissions;

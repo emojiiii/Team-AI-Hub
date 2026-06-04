@@ -121,6 +121,49 @@ pub struct PullRequest {
     pub state: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullRequestQueryState {
+    Open,
+    Closed,
+    All,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PullRequestSummary {
+    pub number: u64,
+    pub title: String,
+    pub html_url: String,
+    pub state: String,
+    pub draft: bool,
+    pub merged: bool,
+    pub author: Option<String>,
+    pub head_ref: String,
+    pub base_ref: String,
+    pub head_repo: Option<String>,
+    pub base_repo: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub body: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IssueComment {
+    pub id: u64,
+    pub html_url: String,
+    pub body: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RepositoryEvent {
+    pub id: String,
+    pub event_type: String,
+    pub actor: Option<String>,
+    pub created_at: String,
+    pub summary: String,
+    pub html_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Invitation {
     pub id: String,

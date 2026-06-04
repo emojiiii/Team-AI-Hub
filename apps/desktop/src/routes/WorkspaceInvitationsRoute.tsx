@@ -5,16 +5,23 @@ import { InvitationsPage } from "../pages/InvitationsPage";
 import { useWorkspace } from "../context/WorkspaceContext";
 import { formatError } from "../utils/format";
 import type { InviteRole } from "../utils/navigation";
+import {
+  providerSupportsInvitations,
+  providerSupportsMembersPage,
+  workspaceProviderLabel,
+} from "../lib/providers";
 
 export function WorkspaceInvitationsRoute() {
-  const { workspace, workspaceMeta, authLogin } = useWorkspace();
+  const { workspace, workspaceMeta, providerId, providerInstance, authLogin } = useWorkspace();
   const [inviteLogin, setInviteLogin] = useState("");
   const [inviteRole, setInviteRole] = useState<InviteRole>("read");
+  const supportsMembers = providerSupportsMembersPage(providerInstance ?? undefined, providerId);
+  const supportsInvitations = providerSupportsInvitations(providerInstance ?? undefined, providerId);
 
   const workspaceMembers = useQuery({
     queryKey: ["workspace-members", workspace, authLogin],
     queryFn: () => listWorkspaceMembers({ workspace }),
-    enabled: Boolean(workspace && authLogin),
+    enabled: Boolean(workspace && authLogin && supportsMembers),
   });
 
   const inviteCollaborator = useMutation({
@@ -33,7 +40,10 @@ export function WorkspaceInvitationsRoute() {
   return (
     <InvitationsPage
       workspaceRef={workspace}
+      providerName={providerInstance?.displayName || workspaceProviderLabel(providerId)}
       workspacePermission={workspaceMeta?.permission ?? "—"}
+      supportsMembers={supportsMembers}
+      supportsInvitations={supportsInvitations}
       inviteLogin={inviteLogin}
       setInviteLogin={setInviteLogin}
       inviteRole={inviteRole}

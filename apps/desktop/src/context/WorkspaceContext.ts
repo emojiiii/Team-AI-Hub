@@ -1,12 +1,18 @@
 import { createContext, useContext } from "react";
-import type { StoredWorkspace } from "../lib/skill-library";
+import type { ProviderAuthStatus, ProviderInstance, StoredWorkspace } from "../lib/skill-library";
 
 export interface WorkspaceContextValue {
   /** e.g. "owner/repo" */
   workspace: string;
   /** Metadata from the workspaces list, null if not found */
   workspaceMeta: StoredWorkspace | null;
-  /** Authenticated GitHub login */
+  /** Normalized provider id for the active workspace. */
+  providerId: string;
+  /** Configured provider instance for the active workspace, if loaded. */
+  providerInstance: ProviderInstance | null;
+  /** Auth status for the active workspace provider. */
+  providerAuthStatus: ProviderAuthStatus | null;
+  /** Authenticated login for the active workspace provider. */
   authLogin: string | null | undefined;
 }
 

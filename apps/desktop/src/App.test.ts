@@ -3,7 +3,15 @@ import { navRoutes, pageCopyKeys, routeToPage } from "./utils/navigation";
 import { formatError } from "./utils/format";
 import {
   githubRepoPath,
+  providerIsGitee,
+  providerIsGitLab,
+  providerSupportsActivityPage,
   providerSupportsComments,
+  providerSupportsInvitations,
+  providerSupportsMemberManagement,
+  providerSupportsMembersPage,
+  providerSupportsPullRequestActions,
+  providerSupportsPullRequestPage,
   workspaceProviderId,
   workspaceMatchesSelection,
 } from "./lib/providers";
@@ -51,6 +59,16 @@ describe("desktop routed management pages", () => {
       }),
     ).toBe("invalid_request: The request body is invalid.");
     expect(formatError(new Error("network unavailable"))).toBe("network unavailable");
+    expect(
+      formatError({
+        error: "insufficient_scope",
+        error_description: "The request requires higher privileges than provided by the access token.",
+        scope: "api read_api",
+      }),
+    ).toBe(
+      "insufficient_scope - The request requires higher privileges than provided by the access token. - required scope: api read_api",
+    );
+    expect(formatError({ detail: { nested: true } })).toBe('{"detail":{"nested":true}}');
   });
 
   it("detects provider-aware workspace refs for social UI", () => {
@@ -105,5 +123,42 @@ describe("desktop routed management pages", () => {
         "webdav-company",
       ),
     ).toBe(false);
+  });
+
+  it("enables GitLab and Gitee governance actions while keeping incoming invites GitHub-only", () => {
+    const gitlabInstance = {
+      id: "gitlab.company.com",
+      kind: "git-lab",
+      displayName: "Company GitLab",
+      webBaseUrl: "https://gitlab.company.com",
+      apiBaseUrl: "https://gitlab.company.com/api/v4",
+      authModes: [],
+      enabled: true,
+    };
+    const giteeInstance = {
+      id: "gitee.com",
+      kind: "gitee",
+      displayName: "Gitee",
+      webBaseUrl: "https://gitee.com",
+      apiBaseUrl: "https://gitee.com/api/v5",
+      authModes: [],
+      enabled: true,
+    };
+
+    expect(providerIsGitLab(gitlabInstance, "gitlab.company.com")).toBe(true);
+    expect(providerSupportsPullRequestPage(gitlabInstance, "gitlab.company.com")).toBe(true);
+    expect(providerSupportsPullRequestActions(gitlabInstance, "gitlab.company.com")).toBe(true);
+    expect(providerSupportsActivityPage(gitlabInstance, "gitlab.company.com")).toBe(true);
+    expect(providerSupportsMembersPage(gitlabInstance, "gitlab.company.com")).toBe(true);
+    expect(providerSupportsMemberManagement(gitlabInstance, "gitlab.company.com")).toBe(true);
+    expect(providerSupportsInvitations(gitlabInstance, "gitlab.company.com")).toBe(false);
+
+    expect(providerIsGitee(giteeInstance, "gitee.com")).toBe(true);
+    expect(providerSupportsPullRequestPage(giteeInstance, "gitee.com")).toBe(true);
+    expect(providerSupportsPullRequestActions(giteeInstance, "gitee.com")).toBe(true);
+    expect(providerSupportsActivityPage(giteeInstance, "gitee.com")).toBe(true);
+    expect(providerSupportsMembersPage(giteeInstance, "gitee.com")).toBe(true);
+    expect(providerSupportsMemberManagement(giteeInstance, "gitee.com")).toBe(true);
+    expect(providerSupportsInvitations(giteeInstance, "gitee.com")).toBe(false);
   });
 });

@@ -8,6 +8,8 @@ export function ManagementTable({
   error,
   empty,
   maxHeightClassName = "max-h-[480px]",
+  className = "",
+  bodyClassName,
   children,
   actions,
 }: {
@@ -17,11 +19,13 @@ export function ManagementTable({
   error: string | null;
   empty: string;
   maxHeightClassName?: string;
+  className?: string;
+  bodyClassName?: string;
   children: ReactNode;
   actions?: ReactNode;
 }) {
   return (
-    <Card className="overflow-hidden p-0 gap-0">
+    <Card className={`overflow-hidden p-0 gap-0 ${className}`}>
       <Card.Header>
         <div className="min-w-0">
           <Card.Title>{title}</Card.Title>
@@ -34,7 +38,7 @@ export function ManagementTable({
           {error}
         </div>
       ) : null}
-      <div className={`${maxHeightClassName} overflow-y-auto`}>
+      <div className={`${bodyClassName ?? maxHeightClassName} overflow-y-auto`}>
         {count ? children : <div className="empty-state">{empty}</div>}
       </div>
     </Card>

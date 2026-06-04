@@ -34,6 +34,7 @@ skill-library-manifest = { path = "../../../crates/skill-library-manifest" }
 skill-library-publish = { path = "../../../crates/skill-library-publish" }
 skill-library-provider = { path = "../../../crates/skill-library-provider" }
 skill-library-provider-github = { path = "../../../crates/skill-library-provider-github" }
+skill-library-provider-gitee = { path = "../../../crates/skill-library-provider-gitee" }
 skill-library-provider-gitlab = { path = "../../../crates/skill-library-provider-gitlab" }
 skill-library-sync = { path = "../../../crates/skill-library-sync" }
 thiserror.workspace = true

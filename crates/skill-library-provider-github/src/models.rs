@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
-use skill_library_provider::{Member, PermissionLevel, PullRequest, Workspace};
+use skill_library_provider::{
+    Member, PermissionLevel, PullRequest, PullRequestSummary, RepositoryEvent, Workspace,
+};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -50,39 +52,6 @@ pub struct GitHubPublishResult {
 pub struct GitHubUploadedFile {
     pub path: String,
     pub sha: String,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum PullRequestQueryState {
-    Open,
-    Closed,
-    All,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PullRequestSummary {
-    pub number: u64,
-    pub title: String,
-    pub html_url: String,
-    pub state: String,
-    pub draft: bool,
-    pub merged: bool,
-    pub author: Option<String>,
-    pub head_ref: String,
-    pub base_ref: String,
-    pub head_repo: Option<String>,
-    pub base_repo: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-    pub body: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IssueComment {
-    pub id: u64,
-    pub html_url: String,
-    pub body: Option<String>,
-    pub created_at: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,16 +124,6 @@ impl From<PullRequestListItemResponse> for PullRequestSummary {
             body: value.body,
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RepositoryEvent {
-    pub id: String,
-    pub event_type: String,
-    pub actor: Option<String>,
-    pub created_at: String,
-    pub summary: String,
-    pub html_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -35,8 +35,10 @@ use models::{
 pub use models::{
     CommitSummary, DeviceCodeResponse, DeviceTokenResponse, GitHubArchiveDownload,
     GitHubPublishFile, GitHubPublishInput, GitHubPublishResult, GitHubTokenInfo,
-    GitHubUploadedFile, GitHubUser, IssueComment, PullRequestQueryState, PullRequestSummary,
-    RepositoryEvent, RepositoryInvitation,
+    GitHubUploadedFile, GitHubUser, RepositoryInvitation,
+};
+pub use skill_library_provider::{
+    IssueComment, PullRequestQueryState, PullRequestSummary, RepositoryEvent,
 };
 use util::{
     extract_tarball, github_permission_role, github_webhook_request, urlencoding_simple,

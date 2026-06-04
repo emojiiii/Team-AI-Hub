@@ -24,17 +24,95 @@ export function providerKindValue(instance: ProviderInstance | undefined) {
   return typeof instance.kind === "string" ? instance.kind : instance.kind.custom;
 }
 
+function providerKindIs(instance: ProviderInstance | undefined, ...kinds: string[]) {
+  const kind = providerKindValue(instance)?.toLowerCase();
+  if (!kind) return false;
+  return kinds.includes(kind);
+}
+
+export function providerIsGitHub(instance: ProviderInstance | undefined, providerId: string | null | undefined) {
+  if (providerKindIs(instance, "github", "git-hub")) return true;
+  const normalized = normalizeProviderId(providerId);
+  return normalized === "github.com" || normalized === "github";
+}
+
+export function providerIsGitLab(instance: ProviderInstance | undefined, providerId: string | null | undefined) {
+  if (providerKindIs(instance, "gitlab", "git-lab")) return true;
+  return normalizeProviderId(providerId) === "gitlab.com";
+}
+
+export function providerIsGitee(instance: ProviderInstance | undefined, providerId: string | null | undefined) {
+  if (providerKindIs(instance, "gitee")) return true;
+  return normalizeProviderId(providerId) === "gitee.com";
+}
+
 export function providerSupportsComments(
   instance: ProviderInstance | undefined,
   providerId: string,
 ) {
-  const kind = providerKindValue(instance);
-  if (kind) {
-    const normalized = kind.toLowerCase();
-    return normalized === "github" || normalized === "git-hub";
-  }
-  const normalized = providerId.toLowerCase();
-  return normalized === "github.com" || normalized === "github";
+  return providerIsGitHub(instance, providerId);
+}
+
+export function providerSupportsPullRequestPage(
+  instance: ProviderInstance | undefined,
+  providerId: string | null | undefined,
+) {
+  return (
+    providerIsGitHub(instance, providerId) ||
+    providerIsGitLab(instance, providerId) ||
+    providerIsGitee(instance, providerId)
+  );
+}
+
+export function providerSupportsPullRequestActions(
+  instance: ProviderInstance | undefined,
+  providerId: string | null | undefined,
+) {
+  return (
+    providerIsGitHub(instance, providerId) ||
+    providerIsGitLab(instance, providerId) ||
+    providerIsGitee(instance, providerId)
+  );
+}
+
+export function providerSupportsActivityPage(
+  instance: ProviderInstance | undefined,
+  providerId: string | null | undefined,
+) {
+  return (
+    providerIsGitHub(instance, providerId) ||
+    providerIsGitLab(instance, providerId) ||
+    providerIsGitee(instance, providerId)
+  );
+}
+
+export function providerSupportsMembersPage(
+  instance: ProviderInstance | undefined,
+  providerId: string | null | undefined,
+) {
+  return (
+    providerIsGitHub(instance, providerId) ||
+    providerIsGitLab(instance, providerId) ||
+    providerIsGitee(instance, providerId)
+  );
+}
+
+export function providerSupportsInvitations(
+  instance: ProviderInstance | undefined,
+  providerId: string | null | undefined,
+) {
+  return providerIsGitHub(instance, providerId);
+}
+
+export function providerSupportsMemberManagement(
+  instance: ProviderInstance | undefined,
+  providerId: string | null | undefined,
+) {
+  return (
+    providerIsGitHub(instance, providerId) ||
+    providerIsGitLab(instance, providerId) ||
+    providerIsGitee(instance, providerId)
+  );
 }
 
 export function workspaceKey(workspace: Pick<Workspace, "provider" | "full_name">) {

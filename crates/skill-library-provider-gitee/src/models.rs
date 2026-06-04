@@ -1,8 +1,11 @@
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
-use skill_library_provider::{ChangedFile, FileEntry, FileKind, Release, Tag, Workspace};
+use serde::{Deserialize, Serialize};
+use skill_library_provider::{
+    ChangedFile, FileEntry, FileKind, IssueComment, Member, PullRequest, PullRequestSummary,
+    Release, RepositoryEvent, Tag, Workspace,
+};
 
-use crate::permissions::{permission_from_repo, split_repo_path};
+use crate::permissions::{permission_from_name, permission_from_repo, split_repo_path};
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct RepoResponse {
@@ -185,4 +188,259 @@ impl From<CompareFileResponse> for ChangedFile {
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct PermissionResponse {
     pub(crate) permission: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct PullRequestResponse {
+    #[serde(default)]
+    pub(crate) number: Option<u64>,
+    #[serde(default)]
+    pub(crate) id: Option<u64>,
+    #[serde(default)]
+    pub(crate) title: String,
+    #[serde(default, alias = "url")]
+    pub(crate) html_url: String,
+    #[serde(default)]
+    pub(crate) state: String,
+    #[serde(default)]
+    pub(crate) draft: bool,
+    #[serde(default)]
+    pub(crate) merged_at: Option<String>,
+    #[serde(default)]
+    pub(crate) user: Option<GiteeUserResponse>,
+    #[serde(default)]
+    pub(crate) head: Option<PullRequestRefResponse>,
+    #[serde(default)]
+    pub(crate) base: Option<PullRequestRefResponse>,
+    #[serde(default)]
+    pub(crate) created_at: String,
+    #[serde(default)]
+    pub(crate) updated_at: String,
+    #[serde(default, alias = "description")]
+    pub(crate) body: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct GiteeUserResponse {
+    #[serde(default)]
+    pub(crate) login: Option<String>,
+    #[serde(default)]
+    pub(crate) name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct PullRequestRefResponse {
+    #[serde(default, rename = "ref")]
+    pub(crate) ref_name: String,
+    #[serde(default)]
+    pub(crate) repo: Option<PullRequestRefRepoResponse>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct PullRequestRefRepoResponse {
+    #[serde(default)]
+    pub(crate) full_name: Option<String>,
+    #[serde(default)]
+    pub(crate) path: Option<String>,
+}
+
+impl From<PullRequestResponse> for PullRequestSummary {
+    fn from(value: PullRequestResponse) -> Self {
+        let merged = value.state == "merged" || value.merged_at.is_some();
+        let state = match value.state.as_str() {
+            "open" | "opened" => "open",
+            _ => "closed",
+        };
+        Self {
+            number: value.number.or(value.id).unwrap_or(0),
+            title: value.title,
+            html_url: value.html_url,
+            state: state.to_owned(),
+            draft: value.draft,
+            merged,
+            author: value.user.and_then(|user| user.login.or(user.name)),
+            head_ref: value
+                .head
+                .as_ref()
+                .map(|head| head.ref_name.clone())
+                .unwrap_or_default(),
+            base_ref: value
+                .base
+                .as_ref()
+                .map(|base| base.ref_name.clone())
+                .unwrap_or_default(),
+            head_repo: value
+                .head
+                .and_then(|head| head.repo.and_then(|repo| repo.full_name.or(repo.path))),
+            base_repo: value
+                .base
+                .and_then(|base| base.repo.and_then(|repo| repo.full_name.or(repo.path))),
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+            body: value.body,
+        }
+    }
+}
+
+impl From<PullRequestResponse> for PullRequest {
+    fn from(value: PullRequestResponse) -> Self {
+        let state = match value.state.as_str() {
+            "open" | "opened" => "open",
+            _ => "closed",
+        };
+        Self {
+            number: value.number.or(value.id).unwrap_or(0),
+            title: value.title,
+            html_url: value.html_url,
+            state: state.to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct PullRequestFileResponse {
+    #[serde(default, alias = "new_path")]
+    pub(crate) filename: String,
+    #[serde(default)]
+    pub(crate) status: String,
+    #[serde(default, alias = "diff")]
+    pub(crate) patch: Option<String>,
+}
+
+impl From<PullRequestFileResponse> for ChangedFile {
+    fn from(value: PullRequestFileResponse) -> Self {
+        Self {
+            filename: value.filename,
+            status: value.status,
+            patch: value.patch,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct RepositoryEventResponse {
+    #[serde(default)]
+    pub(crate) id: Option<serde_json::Value>,
+    #[serde(default, rename = "type")]
+    pub(crate) event_type: Option<String>,
+    #[serde(default)]
+    pub(crate) actor: Option<GiteeUserResponse>,
+    #[serde(default)]
+    pub(crate) created_at: String,
+    #[serde(default)]
+    pub(crate) payload: Option<serde_json::Value>,
+}
+
+impl From<RepositoryEventResponse> for RepositoryEvent {
+    fn from(value: RepositoryEventResponse) -> Self {
+        let event_type = value.event_type.unwrap_or_else(|| "unknown".to_owned());
+        let id = value
+            .id
+            .as_ref()
+            .and_then(|id| {
+                id.as_str()
+                    .map(str::to_owned)
+                    .or_else(|| id.as_u64().map(|value| value.to_string()))
+            })
+            .unwrap_or_else(|| value.created_at.clone());
+        let (summary, html_url) = match (event_type.as_str(), value.payload.as_ref()) {
+            ("PushEvent", Some(payload)) => {
+                let ref_name = payload.get("ref").and_then(|v| v.as_str()).unwrap_or("");
+                let count = payload
+                    .get("commits")
+                    .and_then(|v| v.as_array())
+                    .map(|commits| commits.len())
+                    .unwrap_or(0);
+                (format!("Pushed {count} commit(s) to {ref_name}"), None)
+            }
+            ("PullRequestEvent", Some(payload)) => {
+                let action = payload.get("action").and_then(|v| v.as_str()).unwrap_or("");
+                let pr = payload.get("pull_request");
+                let title = pr
+                    .and_then(|p| p.get("title"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let url = pr
+                    .and_then(|p| p.get("html_url").or_else(|| p.get("url")))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned);
+                (format!("Pull request {action}: {title}"), url)
+            }
+            (other, _) => (other.to_owned(), None),
+        };
+        Self {
+            id,
+            event_type,
+            actor: value.actor.and_then(|actor| actor.login.or(actor.name)),
+            created_at: value.created_at,
+            summary,
+            html_url,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct CollaboratorResponse {
+    #[serde(default)]
+    pub(crate) login: Option<String>,
+    #[serde(default)]
+    pub(crate) name: Option<String>,
+    #[serde(default)]
+    pub(crate) avatar_url: Option<String>,
+    #[serde(default)]
+    pub(crate) permission: Option<String>,
+    #[serde(default)]
+    pub(crate) permissions: Option<RepoPermissions>,
+}
+
+impl From<CollaboratorResponse> for Member {
+    fn from(value: CollaboratorResponse) -> Self {
+        let role = value
+            .permission
+            .as_deref()
+            .map(permission_from_name)
+            .unwrap_or_else(|| permission_from_repo(value.permissions.as_ref(), "private"));
+        Self {
+            login: value.login.or(value.name).unwrap_or_default(),
+            role,
+            avatar_url: value.avatar_url,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ClosePullRequestRequest {
+    pub(crate) state: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PullRequestCommentRequest<'a> {
+    pub(crate) body: &'a str,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct PullRequestCommentResponse {
+    pub(crate) id: u64,
+    #[serde(default, alias = "url")]
+    pub(crate) html_url: String,
+    #[serde(default)]
+    pub(crate) body: Option<String>,
+    #[serde(default)]
+    pub(crate) created_at: String,
+}
+
+impl From<PullRequestCommentResponse> for IssueComment {
+    fn from(value: PullRequestCommentResponse) -> Self {
+        Self {
+            id: value.id,
+            html_url: value.html_url,
+            body: value.body,
+            created_at: value.created_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct CollaboratorRequest<'a> {
+    pub(crate) permission: &'a str,
 }
